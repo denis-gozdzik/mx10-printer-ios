@@ -53,3 +53,4 @@ targets:
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/MX10Printer.app/MX10Printer"
         BUNDLE_LOADER: "$(TEST_HOST)"
         IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+        GENERATE_INFOPLIST_FILE: "YES"
