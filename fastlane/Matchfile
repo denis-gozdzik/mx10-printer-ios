@@ -1,5 +1,6 @@
 GITHUB_REPOSITORY_OWNER ||= ENV["GITHUB_REPOSITORY_OWNER"]
+MATCH_GIT_URL ||= ENV["MATCH_GIT_URL"] || "https://github.com/denis-gozdzik/MX10-Match-Secrets.git"
 
-git_url("https://github.com/#{GITHUB_REPOSITORY_OWNER}/Match-Secrets.git")
+git_url(MATCH_GIT_URL)
 storage_mode("git")
 type("appstore")

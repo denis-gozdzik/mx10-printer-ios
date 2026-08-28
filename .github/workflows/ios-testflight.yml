@@ -14,6 +14,7 @@ env:
   MARKETING_VERSION: "1.0.0"
   CURRENT_PROJECT_VERSION: ${{ github.run_number }}
   DEVELOPMENT_TEAM: ${{ secrets.TEAMID }}
+  MATCH_GIT_URL: https://github.com/denis-gozdzik/MX10-Match-Secrets.git
 
 jobs:
   testflight:
@@ -83,6 +84,7 @@ jobs:
           FASTLANE_KEY: ${{ secrets.FASTLANE_KEY }}
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          MATCH_GIT_URL: https://github.com/denis-gozdzik/MX10-Match-Secrets.git
         run: |
           {
             echo "TEAMID=$TEAMID"
@@ -93,6 +95,7 @@ jobs:
             printf '%s\n' "$FASTLANE_KEY"
             echo "EOF"
             echo "MATCH_PASSWORD=$MATCH_PASSWORD"
+            echo "MATCH_GIT_URL=https://github.com/denis-gozdzik/MX10-Match-Secrets.git"
             echo "GITHUB_REPOSITORY_OWNER=$GITHUB_REPOSITORY_OWNER"
           } >> "$GITHUB_ENV"
 
