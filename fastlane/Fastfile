@@ -49,6 +49,23 @@ platform :ios do
       username: ENV["FASTLANE_USER"]
     )
 
+    profile_mapping = lane_context[SharedValues::MATCH_PROVISIONING_PROFILE_MAPPING]
+    profile_name = profile_mapping["pl.mx10printer.app"]
+
+    if profile_name.nil?
+      UI.user_error!("No App Store provisioning profile mapping found for pl.mx10printer.app")
+    end
+
+    update_code_signing_settings(
+      use_automatic_signing: false,
+      path: "#{ENV['GITHUB_WORKSPACE']}/MX10Printer.xcodeproj",
+      team_id: TEAMID,
+      code_sign_identity: "Apple Distribution",
+      profile_name: profile_name,
+      bundle_identifier: "pl.mx10printer.app",
+      build_configurations: ["Release"]
+    )
+
     gym(
       scheme: "MX10Printer",
       configuration: "Release",
@@ -56,7 +73,14 @@ platform :ios do
       destination: "generic/platform=iOS",
       output_name: "MX10Printer.ipa",
       silent: true,
-      clean: true
+      clean: true,
+      export_options: {
+        signingStyle: "manual",
+        provisioningProfiles: {
+          "pl.mx10printer.app" => profile_name
+        },
+        teamID: TEAMID
+      }
     )
 
     upload_to_testflight(
