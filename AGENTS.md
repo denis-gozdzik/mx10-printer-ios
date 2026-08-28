@@ -7,7 +7,10 @@ This project records the verified MX10 printer behavior used by the application.
 - BLE device name: MX10
 - Printer width: 384 px
 - One monochrome print row is 48 bytes
-- Primary service UUID: AE30
+- Advertised service UUID: AF30
+- Connected protocol service UUID: AE30
+- AF30 is the confirmed advertised service.
+- AE30 is the confirmed connected protocol service.
 - Write characteristic UUID: AE01 (`Write Without Response`)
 - Notify characteristic UUID: AE02 (`Notify`)
 - Additional discovered UUIDs: AE03, AE04, AE05, AE10, AE3A, AE3B, AE3C
