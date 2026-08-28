@@ -44,7 +44,7 @@ final class MX10Printer: PrintJobPrinting {
                 let frame = try MX10Protocol.printRow(row)
                 bluetoothManager.send(data: frame)
             } catch {
-                print("Failed to print test row: \(error.localizedDescription)")
+                Swift.print("Failed to print test row: \(error.localizedDescription)")
             }
         }
     }
