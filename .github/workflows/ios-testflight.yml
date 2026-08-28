@@ -1,0 +1,107 @@
+name: iOS TestFlight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  XCODE_PROJECT: MX10Printer.xcodeproj
+  XCODE_SCHEME: MX10Printer
+  CONFIGURATION: Release
+  APP_IDENTIFIER: pl.mx10printer.app
+  MARKETING_VERSION: "1.0.0"
+  CURRENT_PROJECT_VERSION: ${{ github.run_number }}
+  DEVELOPMENT_TEAM: ${{ secrets.TEAMID }}
+
+jobs:
+  testflight:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -switch /Applications/Xcode_26.6.app
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: List project schemes
+        run: xcodebuild -list -project MX10Printer.xcodeproj
+
+      - name: Run unit tests
+        run: |
+          xcodebuild \
+            -project MX10Printer.xcodeproj \
+            -scheme MX10Printer \
+            -sdk iphonesimulator \
+            -destination 'platform=iOS Simulator,name=iPad (A16)' \
+            test
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+
+      - name: Install Ruby dependencies
+        run: bundle install
+
+      - name: Validate required secrets
+        shell: bash
+        env:
+          TEAMID: ${{ secrets.TEAMID }}
+          FASTLANE_KEY_ID: ${{ secrets.FASTLANE_KEY_ID }}
+          FASTLANE_ISSUER_ID: ${{ secrets.FASTLANE_ISSUER_ID }}
+          FASTLANE_KEY: ${{ secrets.FASTLANE_KEY }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+        run: |
+          for name in TEAMID FASTLANE_KEY_ID FASTLANE_ISSUER_ID FASTLANE_KEY GH_PAT MATCH_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "Missing required secret: $name"
+              exit 1
+            fi
+          done
+
+      - name: Prepare signing environment
+        shell: bash
+        env:
+          TEAMID: ${{ secrets.TEAMID }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          FASTLANE_KEY_ID: ${{ secrets.FASTLANE_KEY_ID }}
+          FASTLANE_ISSUER_ID: ${{ secrets.FASTLANE_ISSUER_ID }}
+          FASTLANE_KEY: ${{ secrets.FASTLANE_KEY }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: |
+          echo "TEAMID=$TEAMID" >> "$GITHUB_ENV"
+          echo "GH_PAT=$GH_PAT" >> "$GITHUB_ENV"
+          echo "FASTLANE_KEY_ID=$FASTLANE_KEY_ID" >> "$GITHUB_ENV"
+          echo "FASTLANE_ISSUER_ID=$FASTLANE_ISSUER_ID" >> "$GITHUB_ENV"
+          echo "FASTLANE_KEY=$FASTLANE_KEY" >> "$GITHUB_ENV"
+          echo "MATCH_PASSWORD=$MATCH_PASSWORD" >> "$GITHUB_ENV"
+          echo "GITHUB_REPOSITORY_OWNER=$GITHUB_REPOSITORY_OWNER" >> "$GITHUB_ENV"
+
+      - name: Build and upload to TestFlight
+        shell: bash
+        env:
+          TEAMID: ${{ secrets.TEAMID }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          FASTLANE_KEY_ID: ${{ secrets.FASTLANE_KEY_ID }}
+          FASTLANE_ISSUER_ID: ${{ secrets.FASTLANE_ISSUER_ID }}
+          FASTLANE_KEY: ${{ secrets.FASTLANE_KEY }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          DEVELOPMENT_TEAM: ${{ secrets.TEAMID }}
+        run: |
+          bundle exec fastlane ios release

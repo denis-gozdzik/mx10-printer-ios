@@ -1,0 +1,69 @@
+default_platform(:ios)
+
+TEAMID = ENV["TEAMID"]
+GH_PAT = ENV["GH_PAT"]
+GITHUB_REPOSITORY_OWNER = ENV["GITHUB_REPOSITORY_OWNER"]
+FASTLANE_KEY_ID = ENV["FASTLANE_KEY_ID"]
+FASTLANE_ISSUER_ID = ENV["FASTLANE_ISSUER_ID"]
+FASTLANE_KEY = ENV["FASTLANE_KEY"]
+MATCH_PASSWORD = ENV["MATCH_PASSWORD"]
+
+platform :ios do
+  desc "Build and upload MX10Printer to TestFlight"
+  lane :release do
+    setup_ci if ENV["CI"]
+
+    update_project_team(
+      path: "#{ENV['GITHUB_WORKSPACE']}/MX10Printer.xcodeproj",
+      teamid: TEAMID
+    )
+
+    api_key = app_store_connect_api_key(
+      key_id: FASTLANE_KEY_ID,
+      issuer_id: FASTLANE_ISSUER_ID,
+      key_content: FASTLANE_KEY
+    )
+
+    previous_build_number = latest_testflight_build_number(
+      app_identifier: "pl.mx10printer.app",
+      api_key: api_key
+    )
+
+    current_build_number = previous_build_number + 1
+    increment_build_number(
+      xcodeproj: "#{ENV['GITHUB_WORKSPACE']}/MX10Printer.xcodeproj",
+      build_number: current_build_number
+    )
+
+    increment_version_number(
+      xcodeproj: "#{ENV['GITHUB_WORKSPACE']}/MX10Printer.xcodeproj",
+      version_number: "1.0.0"
+    )
+
+    match(
+      type: "appstore",
+      git_basic_authorization: Base64.strict_encode64("#{GITHUB_REPOSITORY_OWNER}:#{GH_PAT}"),
+      app_identifier: ["pl.mx10printer.app"],
+      team_id: TEAMID,
+      readonly: false,
+      username: ENV["FASTLANE_USER"]
+    )
+
+    gym(
+      scheme: "MX10Printer",
+      configuration: "Release",
+      export_method: "app-store",
+      destination: "generic/platform=iOS",
+      output_name: "MX10Printer.ipa",
+      silent: true,
+      clean: true
+    )
+
+    upload_to_testflight(
+      api_key: api_key,
+      ipa: "MX10Printer.ipa",
+      skip_waiting_for_build_processing: true,
+      skip_submission: false
+    )
+  end
+end
