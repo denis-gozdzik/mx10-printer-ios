@@ -84,13 +84,17 @@ jobs:
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
         run: |
-          echo "TEAMID=$TEAMID" >> "$GITHUB_ENV"
-          echo "GH_PAT=$GH_PAT" >> "$GITHUB_ENV"
-          echo "FASTLANE_KEY_ID=$FASTLANE_KEY_ID" >> "$GITHUB_ENV"
-          echo "FASTLANE_ISSUER_ID=$FASTLANE_ISSUER_ID" >> "$GITHUB_ENV"
-          echo "FASTLANE_KEY=$FASTLANE_KEY" >> "$GITHUB_ENV"
-          echo "MATCH_PASSWORD=$MATCH_PASSWORD" >> "$GITHUB_ENV"
-          echo "GITHUB_REPOSITORY_OWNER=$GITHUB_REPOSITORY_OWNER" >> "$GITHUB_ENV"
+          {
+            echo "TEAMID=$TEAMID"
+            echo "GH_PAT=$GH_PAT"
+            echo "FASTLANE_KEY_ID=$FASTLANE_KEY_ID"
+            echo "FASTLANE_ISSUER_ID=$FASTLANE_ISSUER_ID"
+            echo "FASTLANE_KEY<<EOF"
+            printf '%s\n' "$FASTLANE_KEY"
+            echo "EOF"
+            echo "MATCH_PASSWORD=$MATCH_PASSWORD"
+            echo "GITHUB_REPOSITORY_OWNER=$GITHUB_REPOSITORY_OWNER"
+          } >> "$GITHUB_ENV"
 
       - name: Build and upload to TestFlight
         shell: bash
