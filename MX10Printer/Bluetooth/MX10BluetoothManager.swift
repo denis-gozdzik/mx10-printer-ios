@@ -38,6 +38,7 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
     private static let mx10ServiceUUID = CBUUID(string: "AE30")
     private static let writeCharacteristicUUID = CBUUID(string: "AE01")
     private static let notifyCharacteristicUUID = CBUUID(string: "AE02")
+    private static let lastConnectedPrinterKey = "lastConnectedMX10PeripheralIdentifier"
 
     @Published var bluetoothStateText: String = "Unknown"
     @Published var printerStateText: String = "Disconnected"
@@ -60,6 +61,7 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
     private var selectedPeripheral: CBPeripheral?
     private var writeCharacteristic: CBCharacteristic?
     private var notifyCharacteristic: CBCharacteristic?
+    private var didAttemptAutoReconnect = false
 
     override init() {
         super.init()
@@ -68,6 +70,10 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
 
     var isConnected: Bool {
         selectedPeripheral?.state == .connected
+    }
+
+    var canSendPrintData: Bool {
+        isConnected && writeCharacteristic != nil
     }
 
     var uniqueDeviceCount: Int {
@@ -171,7 +177,7 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
         switch central.state {
         case .poweredOn:
             bluetoothStateText = "On"
-            scanForMX10()
+            reconnectToLastKnownMX10OrScan()
         case .poweredOff:
             bluetoothStateText = "Off"
             isScanning = false
@@ -261,6 +267,8 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
         if let error {
             print("Failed to connect: \(error.localizedDescription)")
         }
+
+        scanForMX10()
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
@@ -287,6 +295,8 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
             printerStateText = "AE30 service missing"
             return
         }
+
+        persistLastConnectedMX10(peripheral)
 
         for service in services where service.uuid == Self.mx10ServiceUUID {
             peripheral.discoverCharacteristics([Self.writeCharacteristicUUID, Self.notifyCharacteristicUUID], for: service)
@@ -375,6 +385,39 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
             connectedPeripheralName = nil
             connectedPeripheralIdentifier = nil
         }
+    }
+
+    private func reconnectToLastKnownMX10OrScan() {
+        guard !didAttemptAutoReconnect else {
+            scanForMX10()
+            return
+        }
+
+        didAttemptAutoReconnect = true
+
+        guard let identifierString = UserDefaults.standard.string(forKey: Self.lastConnectedPrinterKey),
+              let identifier = UUID(uuidString: identifierString) else {
+            scanForMX10()
+            return
+        }
+
+        let peripherals = centralManager.retrievePeripherals(withIdentifiers: [identifier])
+        guard let peripheral = peripherals.first else {
+            scanForMX10()
+            return
+        }
+
+        peripheralsByIdentifier[peripheral.identifier] = peripheral
+        selectedPeripheral = peripheral
+        connectedPeripheralIdentifier = peripheral.identifier
+        connectedPeripheralName = peripheral.name ?? "Last MX10"
+        resetConnectionDiagnostics(clearConnectedPeripheral: false)
+        printerStateText = "Reconnecting"
+        centralManager.connect(peripheral, options: nil)
+    }
+
+    private func persistLastConnectedMX10(_ peripheral: CBPeripheral) {
+        UserDefaults.standard.set(peripheral.identifier.uuidString, forKey: Self.lastConnectedPrinterKey)
     }
 
     private func displayName(for peripheral: CBPeripheral) -> String {
