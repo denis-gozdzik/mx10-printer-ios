@@ -1,0 +1,30 @@
+# macOS / editor noise
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Xcode / Apple build outputs
+DerivedData/
+build/
+*.xcworkspace
+*.xcodeproj
+*.xcuserstate
+*.xcuserdata
+*.xcscmblueprint
+
+# Swift package / CI temporary files
+.swiftpm/
+.swift-version
+
+# Local secrets / environment
+.env
+.env.*
+*.p12
+*.mobileprovision
+*.cer
+
+# Generated artifacts
+coverage/
+*.dSYM

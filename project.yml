@@ -1,0 +1,55 @@
+name: MX10Printer
+
+options:
+  bundleIdPrefix: pl.mx10printer.app
+  deploymentTarget:
+    iOS: "17.0"
+
+settings:
+  base:
+    TARGETED_DEVICE_FAMILY: "1"
+    SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: "NO"
+    SWIFT_VERSION: "5.9"
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+
+packages: {}
+
+targets:
+  MX10Printer:
+    type: application
+    platform: iOS
+    sources:
+      - MX10Printer
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: pl.mx10printer.app
+        ENABLE_PREVIEWS: "YES"
+        GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Automatic
+    info:
+      path: MX10Printer/Info.plist
+      properties:
+        CFBundleDisplayName: MX10Printer
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        CFBundleIdentifier: pl.mx10printer.app
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        NSBluetoothAlwaysUsageDescription: "Aplikacja używa Bluetooth do komunikacji z drukarką termiczną MX10."
+    scheme:
+      testTargets:
+        - MX10PrinterTests
+
+  MX10PrinterTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - MX10PrinterTests
+    dependencies:
+      - target: MX10Printer
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: pl.mx10printer.app.tests
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/MX10Printer.app/MX10Printer"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        IPHONEOS_DEPLOYMENT_TARGET: "17.0"

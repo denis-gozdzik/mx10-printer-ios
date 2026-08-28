@@ -1,0 +1,45 @@
+name: iOS Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: List project schemes
+        run: xcodebuild -list -project MX10Printer.xcodeproj
+
+      - name: Run unit tests
+        run: |
+          xcodebuild \
+            -project MX10Printer.xcodeproj \
+            -scheme MX10Printer \
+            -sdk iphonesimulator \
+            -destination 'platform=iOS Simulator,name=iPhone 15' \
+            test
+
+      - name: Build app for iOS Simulator
+        run: |
+          xcodebuild \
+            -project MX10Printer.xcodeproj \
+            -scheme MX10Printer \
+            -sdk iphonesimulator \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            build
