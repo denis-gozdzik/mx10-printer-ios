@@ -1,5 +1,9 @@
 default_platform(:ios)
 
+require "shellwords"
+
+APP_IDENTIFIER = "pl.mx10printer.app"
+PROJECT_PATH = File.join(ENV["GITHUB_WORKSPACE"] || File.expand_path("..", __dir__), "MX10Printer.xcodeproj")
 TEAMID = ENV["TEAMID"]
 GH_PAT = ENV["GH_PAT"]
 GITHUB_REPOSITORY_OWNER = ENV["GITHUB_REPOSITORY_OWNER"]
@@ -8,13 +12,59 @@ FASTLANE_ISSUER_ID = ENV["FASTLANE_ISSUER_ID"]
 FASTLANE_KEY = ENV["FASTLANE_KEY"]
 MATCH_PASSWORD = ENV["MATCH_PASSWORD"]
 
+def release_build_settings(project_path)
+  command = [
+    "xcodebuild",
+    "-project", Shellwords.escape(project_path),
+    "-scheme", "MX10Printer",
+    "-configuration", "Release",
+    "-showBuildSettings"
+  ].join(" ")
+
+  output = `#{command} 2>&1`
+  UI.user_error!("xcodebuild -showBuildSettings failed:\n#{output}") unless $?.success?
+
+  marker = "Build settings for action build and target MX10Printer:"
+  target_start = output.index(marker)
+  UI.user_error!("Could not find MX10Printer target build settings in xcodebuild output") unless target_start
+
+  target_output = output[(target_start + marker.length)..]
+  next_target_start = target_output.index(/\nBuild settings for action build and target /)
+  next_target_start ? target_output[0...next_target_start] : target_output
+end
+
+def release_build_setting(build_settings, key)
+  build_settings[/^\s*#{Regexp.escape(key)}\s*=\s*(.*?)\s*$/, 1]
+end
+
+def validate_release_signing(project_path:, team_id:, app_identifier:, profile_name:)
+  build_settings = release_build_settings(project_path)
+  expected_settings = {
+    "PRODUCT_BUNDLE_IDENTIFIER" => app_identifier,
+    "CODE_SIGN_STYLE" => "Manual",
+    "CODE_SIGN_IDENTITY" => "Apple Distribution",
+    "DEVELOPMENT_TEAM" => team_id,
+    "PROVISIONING_PROFILE_SPECIFIER" => profile_name
+  }
+
+  UI.message("Effective Release signing settings:")
+  expected_settings.each do |key, expected_value|
+    actual_value = release_build_setting(build_settings, key)
+    UI.message("  #{key} = #{actual_value}")
+
+    if actual_value != expected_value
+      UI.user_error!("Unexpected #{key}: expected #{expected_value.inspect}, got #{actual_value.inspect}")
+    end
+  end
+end
+
 platform :ios do
   desc "Build and upload MX10Printer to TestFlight"
   lane :release do
     setup_ci if ENV["CI"]
 
     update_project_team(
-      path: "#{ENV['GITHUB_WORKSPACE']}/MX10Printer.xcodeproj",
+      path: PROJECT_PATH,
       teamid: TEAMID
     )
 
@@ -25,45 +75,53 @@ platform :ios do
     )
 
     previous_build_number = latest_testflight_build_number(
-      app_identifier: "pl.mx10printer.app",
+      app_identifier: APP_IDENTIFIER,
       api_key: api_key
     )
 
     current_build_number = previous_build_number + 1
     increment_build_number(
-      xcodeproj: "#{ENV['GITHUB_WORKSPACE']}/MX10Printer.xcodeproj",
+      xcodeproj: PROJECT_PATH,
       build_number: current_build_number
     )
 
     increment_version_number(
-      xcodeproj: "#{ENV['GITHUB_WORKSPACE']}/MX10Printer.xcodeproj",
+      xcodeproj: PROJECT_PATH,
       version_number: "1.0.0"
     )
 
     match(
       type: "appstore",
       git_basic_authorization: Base64.strict_encode64("#{GITHUB_REPOSITORY_OWNER}:#{GH_PAT}"),
-      app_identifier: ["pl.mx10printer.app"],
+      app_identifier: [APP_IDENTIFIER],
       team_id: TEAMID,
       readonly: false,
       username: ENV["FASTLANE_USER"]
     )
 
     profile_mapping = lane_context[SharedValues::MATCH_PROVISIONING_PROFILE_MAPPING]
-    profile_name = profile_mapping["pl.mx10printer.app"]
+    profile_name = profile_mapping[APP_IDENTIFIER]
 
     if profile_name.nil?
-      UI.user_error!("No App Store provisioning profile mapping found for pl.mx10printer.app")
+      UI.user_error!("No App Store provisioning profile mapping found for #{APP_IDENTIFIER}")
     end
 
     update_code_signing_settings(
       use_automatic_signing: false,
-      path: "#{ENV['GITHUB_WORKSPACE']}/MX10Printer.xcodeproj",
+      path: PROJECT_PATH,
+      targets: ["MX10Printer"],
       team_id: TEAMID,
       code_sign_identity: "Apple Distribution",
       profile_name: profile_name,
-      bundle_identifier: "pl.mx10printer.app",
+      bundle_identifier: APP_IDENTIFIER,
       build_configurations: ["Release"]
+    )
+
+    validate_release_signing(
+      project_path: PROJECT_PATH,
+      team_id: TEAMID,
+      app_identifier: APP_IDENTIFIER,
+      profile_name: profile_name
     )
 
     gym(
@@ -76,9 +134,7 @@ platform :ios do
       clean: true,
       export_options: {
         signingStyle: "manual",
-        provisioningProfiles: {
-          "pl.mx10printer.app" => profile_name
-        },
+        provisioningProfiles: profile_mapping,
         teamID: TEAMID
       }
     )
