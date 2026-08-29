@@ -20,7 +20,7 @@ struct PageRenderer {
                 "elements": document.firstPage.elements.count
             ]
         )
-        render(page: document.firstPage)
+        return render(page: document.firstPage)
     }
 
     func render(page: PrintPage) -> CGImage {
