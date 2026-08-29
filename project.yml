@@ -11,6 +11,8 @@ settings:
     SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: "NO"
     SWIFT_VERSION: "5.9"
     IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    CURRENT_PROJECT_VERSION: "1"
+    MARKETING_VERSION: "1.0.0"
 
 packages: {}
 
@@ -24,12 +26,9 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: pl.mx10printer.app
         ENABLE_PREVIEWS: "YES"
-        GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_STYLE: Manual
         DEVELOPMENT_TEAM: "${DEVELOPMENT_TEAM}"
-        CURRENT_PROJECT_VERSION: "${CURRENT_PROJECT_VERSION}"
-        MARKETING_VERSION: "1.0.0"
       configs:
         Release:
           CODE_SIGN_IDENTITY: Apple Distribution
@@ -37,8 +36,8 @@ targets:
       path: MX10Printer/Info.plist
       properties:
         CFBundleDisplayName: MX10Printer
-        CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "1"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         CFBundleIdentifier: pl.mx10printer.app
         CFBundleIconName: AppIcon
         ITSAppUsesNonExemptEncryption: false
@@ -63,4 +62,14 @@ targets:
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/MX10Printer.app/MX10Printer"
         BUNDLE_LOADER: "$(TEST_HOST)"
         IPHONEOS_DEPLOYMENT_TARGET: "17.0"
-        GENERATE_INFOPLIST_FILE: "YES"
+    info:
+      path: MX10PrinterTests/Info.plist
+      properties:
+        CFBundleDevelopmentRegion: "$(DEVELOPMENT_LANGUAGE)"
+        CFBundleExecutable: "$(EXECUTABLE_NAME)"
+        CFBundleIdentifier: "$(PRODUCT_BUNDLE_IDENTIFIER)"
+        CFBundleInfoDictionaryVersion: "6.0"
+        CFBundleName: "$(PRODUCT_NAME)"
+        CFBundlePackageType: BNDL
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
