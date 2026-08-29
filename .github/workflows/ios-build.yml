@@ -1,8 +1,12 @@
 name: iOS Build
 
 on:
-  push:
   pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
@@ -11,16 +15,26 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Show Xcode version
         run: xcodebuild -version
 
       - name: Install XcodeGen
-        run: brew install xcodegen
+        run: |
+          if command -v xcodegen >/dev/null 2>&1; then
+            xcodegen --version
+          else
+            brew install xcodegen
+          fi
 
       - name: Generate Xcode project
         run: xcodegen generate
+
+      - name: Verify export compliance plist
+        run: |
+          value=$(/usr/libexec/PlistBuddy -c "Print :ITSAppUsesNonExemptEncryption" MX10Printer/Info.plist)
+          test "$value" = "false"
 
       - name: List project schemes
         run: xcodebuild -list -project MX10Printer.xcodeproj
