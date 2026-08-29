@@ -69,6 +69,14 @@ Verified examples:
 - The app is targeted at iOS 17.
 - Physical printer testing takes place on iPhone + MX10 hardware.
 
+## TestFlight distribution
+
+- Internal testing group: Home
+- Distribution mechanism: App Store Connect `Enable automatic distribution` on the `Home` internal group.
+- CI uploads builds and waits for App Store Connect processing.
+- Fastlane must not assign the `Home` internal group directly; internal group assignment is handled by App Store Connect automatic distribution.
+- TestFlight delivery must not enable external testing, public links, Beta App Review submission, or App Store Review submission.
+
 ## Guardrail
 
 Never guess undocumented MX10 commands. If a behavior is not confirmed or found in a trustworthy protocol implementation, label it as unverified.
