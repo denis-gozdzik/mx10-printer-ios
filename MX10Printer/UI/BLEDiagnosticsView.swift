@@ -47,6 +47,7 @@ struct BLEDiagnosticsView: View {
             Text("AE02 found: \(bluetoothManager.ae02Found ? "YES" : "NO")")
             Text("AE02 notifications enabled: \(bluetoothManager.ae02NotificationsEnabled ? "YES" : "NO")")
             Text("Max write without response: \(bluetoothManager.maxWriteWithoutResponseLength.map { String($0) } ?? "Unknown")")
+            Text("Current max write without response: \(bluetoothManager.currentMaximumWriteWithoutResponse.map { String($0) } ?? "Unknown")")
             Text("Transport state: \(bluetoothManager.transportState.title)")
         }
     }

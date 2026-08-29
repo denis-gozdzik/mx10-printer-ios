@@ -121,8 +121,14 @@ struct PrintJob: Identifiable, Equatable {
     }
 
     mutating func apply(progress: PrintJobProgress) {
-        currentRow = progress.currentRow
-        bytesSent = progress.bytesSent
+        switch progress.activity {
+        case .started, .rowSent, .controlSent, .completed:
+            currentRow = max(currentRow, progress.currentRow)
+            bytesSent = max(bytesSent, progress.bytesSent)
+        case .peripheralReady, .notificationReceived:
+            break
+        }
+
         lastProgressAt = progress.timestamp
     }
 

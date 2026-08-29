@@ -35,7 +35,7 @@ private struct BLEAdvertisementRecord {
 
 private struct PendingWriteResumeContext {
     let rowDescription: String?
-    let chunkDescription: String
+    let frameDescription: String
 }
 
 final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripheralDelegate, PrintFrameTransport {
@@ -64,6 +64,7 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
     @Published var ae02Found: Bool = false
     @Published var ae02NotificationsEnabled: Bool = false
     @Published var maxWriteWithoutResponseLength: Int?
+    @Published var currentMaximumWriteWithoutResponse: Int?
     @Published var transportState: PrinterTransportState = .idle
 
     var onTransportActivity: ((PrintJobProgressActivity) -> Void)?
@@ -345,6 +346,7 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
         printerStateText = "Connected"
         peripheral.delegate = self
         maxWriteWithoutResponseLength = peripheral.maximumWriteValueLength(for: .withoutResponse)
+        currentMaximumWriteWithoutResponse = maxWriteWithoutResponseLength
         logger.log(
             .ble,
             "didConnect",
@@ -386,6 +388,7 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
         writeCharacteristic = nil
         notifyCharacteristic = nil
         maxWriteWithoutResponseLength = nil
+        currentMaximumWriteWithoutResponse = nil
         connectedPeripheralName = nil
         connectedPeripheralIdentifier = nil
         resetConnectionDiagnostics(clearConnectedPeripheral: true)
@@ -569,7 +572,7 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
 
         if let pendingWriteResumeContext {
             metadata["resumeRow"] = pendingWriteResumeContext.rowDescription ?? "n/a"
-            metadata["resumeChunk"] = pendingWriteResumeContext.chunkDescription
+            metadata["resumeFrame"] = pendingWriteResumeContext.frameDescription
         }
 
         logger.log(
@@ -578,7 +581,6 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
             metadata: metadata
         )
         transportState = activeTransportJobID == nil ? .idle : .sending
-        onTransportActivity?(.peripheralReady)
         resumeReadinessContinuation(with: .success(()))
     }
 
@@ -590,13 +592,20 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
         activeTransportJobID = jobID
         transportCancelled = false
         transportState = .preparing
+        let cachedMaximum = maxWriteWithoutResponseLength
+        let currentMaximum = selectedPeripheral?.maximumWriteValueLength(for: .withoutResponse)
+        if let currentMaximum {
+            currentMaximumWriteWithoutResponse = currentMaximum
+            maxWriteWithoutResponseLength = currentMaximum
+        }
         logger.log(
             .queue,
             "transport preparing",
             metadata: [
                 "job": jobID.uuidString,
                 "rows": totalRows,
-                "maxWriteWithoutResponse": maxWriteWithoutResponseLength ?? -1,
+                "cachedMaximumWriteWithoutResponse": cachedMaximum ?? -1,
+                "currentMaximumWriteWithoutResponse": currentMaximum ?? -1,
                 "interPacketDelayNanoseconds": configuration.interPacketDelayNanoseconds
             ]
         )
@@ -622,101 +631,74 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
             throw PrintTransportError.writeCharacteristicMissing
         }
 
-        let maximumWriteLength = peripheral.maximumWriteValueLength(for: .withoutResponse)
-        maxWriteWithoutResponseLength = maximumWriteLength
+        let cachedMaximum = maxWriteWithoutResponseLength
+        let currentMaximum = peripheral.maximumWriteValueLength(for: .withoutResponse)
+        currentMaximumWriteWithoutResponse = currentMaximum
+        maxWriteWithoutResponseLength = currentMaximum
 
-        let chunks: [PrintFrameChunk]
-        do {
-            chunks = try PrintFrameFragmenter.chunks(for: frame, maximumLength: maximumWriteLength)
-        } catch {
+        guard currentMaximum > 0 else {
             transportState = .failed
             logger.log(
                 .error,
                 "invalid maximumWriteWithoutResponse",
                 metadata: packetMetadata(frame: frame, context: context).merging([
-                    "maximumWriteWithoutResponse": "\(maximumWriteLength)",
+                    "cachedMaximumWriteWithoutResponse": cachedMaximum.map { "\($0)" } ?? "unknown",
+                    "currentMaximumWriteWithoutResponse": "\(currentMaximum)",
                     "hex": frame.diagnosticHexString
                 ]) { current, _ in current }
             )
-            throw error
+            throw PrintTransportError.invalidMaximumWriteLength(currentMaximum)
+        }
+
+        guard frame.count <= currentMaximum else {
+            transportState = .failed
+            logger.log(
+                .error,
+                "maximumWriteWithoutResponse too small for MX10 frame",
+                metadata: packetMetadata(
+                    frame: frame,
+                    context: context,
+                    currentMaximumWriteWithoutResponse: currentMaximum,
+                    cachedMaximumWriteWithoutResponse: cachedMaximum
+                ).merging(["hex": frame.diagnosticHexString]) { current, _ in current }
+            )
+            throw PrintTransportError.maximumWriteLengthTooSmall(
+                frameBytes: frame.count,
+                currentMaximum: currentMaximum,
+                cachedMaximum: cachedMaximum
+            )
         }
 
         logger.log(
             logCategory(for: context),
-            context.kind == .bitmapRow && !context.shouldLogFullHex ? "write frame fragments summarized" : "write frame fragments",
+            "write frame",
             metadata: packetMetadata(
                 frame: frame,
                 context: context,
-                maximumWriteWithoutResponse: maximumWriteLength,
-                chunks: chunks
+                currentMaximumWriteWithoutResponse: currentMaximum,
+                cachedMaximumWriteWithoutResponse: cachedMaximum
             )
         )
 
-        for chunk in chunks {
-            try Task.checkCancellation()
+        try await waitUntilReadyToWrite(
+            peripheral: peripheral,
+            frame: frame,
+            context: context,
+            currentMaximumWriteWithoutResponse: currentMaximum,
+            cachedMaximumWriteWithoutResponse: cachedMaximum
+        )
 
-            guard !transportCancelled else {
-                throw PrintTransportError.cancelled
-            }
-
-            guard peripheral.state == .connected else {
-                transportState = .failed
-                throw PrintTransportError.disconnected
-            }
-
-            while !peripheral.canSendWriteWithoutResponse {
-                guard !transportCancelled else {
-                    throw PrintTransportError.cancelled
-                }
-
-                guard peripheral.state == .connected else {
-                    transportState = .failed
-                    throw PrintTransportError.disconnected
-                }
-
-                transportState = .waitingForPeripheralReady
-                pendingWriteResumeContext = PendingWriteResumeContext(
-                    rowDescription: rowDescription(for: context),
-                    chunkDescription: "\(chunk.oneBasedIndex)/\(chunk.totalCount)"
-                )
-                logger.log(
-                    .ble,
-                    "backpressure",
-                    metadata: chunkMetadata(
-                        frame: frame,
-                        context: context,
-                        maximumWriteWithoutResponse: maximumWriteLength,
-                        chunk: chunk
-                    ).merging(["canSendWriteWithoutResponse": "false"]) { current, _ in current }
-                )
-
-                do {
-                    try await waitForPeripheralReady()
-                    pendingWriteResumeContext = nil
-                } catch {
-                    pendingWriteResumeContext = nil
-                    throw error
-                }
-            }
-
-            guard !transportCancelled else {
-                throw PrintTransportError.cancelled
-            }
-
-            transportState = .sending
-            logger.log(
-                logCategory(for: context),
-                "write chunk",
-                metadata: chunkMetadata(
-                    frame: frame,
-                    context: context,
-                    maximumWriteWithoutResponse: maximumWriteLength,
-                    chunk: chunk
-                )
-            )
-            peripheral.writeValue(chunk.data, for: characteristic, type: .withoutResponse)
+        guard !transportCancelled else {
+            throw PrintTransportError.cancelled
         }
 
+        guard peripheral.state == .connected else {
+            transportState = .failed
+            throw PrintTransportError.disconnected
+        }
+
+        transportState = .sending
+        peripheral.writeValue(frame, for: characteristic, type: .withoutResponse)
         printerStateText = "Connected"
     }
 
@@ -764,6 +746,7 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
         ae02Found = false
         ae02NotificationsEnabled = false
         maxWriteWithoutResponseLength = nil
+        currentMaximumWriteWithoutResponse = nil
 
         if clearConnectedPeripheral {
             connectedPeripheralName = nil
@@ -911,11 +894,54 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
         resumeReadinessContinuation(with: .failure(PrintTransportError.disconnected))
     }
 
+    private func waitUntilReadyToWrite(
+        peripheral: CBPeripheral,
+        frame: Data,
+        context: PrintPacketContext,
+        currentMaximumWriteWithoutResponse: Int,
+        cachedMaximumWriteWithoutResponse: Int?
+    ) async throws {
+        while !peripheral.canSendWriteWithoutResponse {
+            guard !transportCancelled else {
+                throw PrintTransportError.cancelled
+            }
+
+            guard peripheral.state == .connected else {
+                transportState = .failed
+                throw PrintTransportError.disconnected
+            }
+
+            transportState = .waitingForPeripheralReady
+            pendingWriteResumeContext = PendingWriteResumeContext(
+                rowDescription: rowDescription(for: context),
+                frameDescription: "\(frame.count) bytes"
+            )
+            logger.log(
+                .ble,
+                "backpressure",
+                metadata: packetMetadata(
+                    frame: frame,
+                    context: context,
+                    currentMaximumWriteWithoutResponse: currentMaximumWriteWithoutResponse,
+                    cachedMaximumWriteWithoutResponse: cachedMaximumWriteWithoutResponse
+                ).merging(["canSendWriteWithoutResponse": "false"]) { current, _ in current }
+            )
+
+            do {
+                try await waitForPeripheralReady()
+                pendingWriteResumeContext = nil
+            } catch {
+                pendingWriteResumeContext = nil
+                throw error
+            }
+        }
+    }
+
     private func packetMetadata(
         frame: Data,
         context: PrintPacketContext,
-        maximumWriteWithoutResponse: Int? = nil,
-        chunks: [PrintFrameChunk] = []
+        currentMaximumWriteWithoutResponse: Int? = nil,
+        cachedMaximumWriteWithoutResponse: Int? = nil
     ) -> [String: String] {
         var metadata: [String: String] = [
             "packetBytes": "\(frame.count)",
@@ -928,13 +954,12 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
             "crc": frame.count >= 2 ? String(format: "0x%02X", frame[frame.count - 2]) : "n/a"
         ]
 
-        if let maximumWriteWithoutResponse {
-            metadata["maximumWriteWithoutResponse"] = "\(maximumWriteWithoutResponse)"
+        if let currentMaximumWriteWithoutResponse {
+            metadata["currentMaximumWriteWithoutResponse"] = "\(currentMaximumWriteWithoutResponse)"
         }
 
-        if !chunks.isEmpty {
-            metadata["chunkCount"] = "\(chunks.count)"
-            metadata["chunkSizes"] = chunks.map { "\($0.data.count)" }.joined(separator: ",")
+        if let cachedMaximumWriteWithoutResponse {
+            metadata["cachedMaximumWriteWithoutResponse"] = "\(cachedMaximumWriteWithoutResponse)"
         }
 
         if let jobID = context.jobID {
@@ -948,29 +973,6 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
 
         if context.shouldLogFullHex {
             metadata["hex"] = frame.diagnosticHexString
-        }
-
-        return metadata
-    }
-
-    private func chunkMetadata(
-        frame: Data,
-        context: PrintPacketContext,
-        maximumWriteWithoutResponse: Int,
-        chunk: PrintFrameChunk
-    ) -> [String: String] {
-        var metadata = packetMetadata(
-            frame: frame,
-            context: context,
-            maximumWriteWithoutResponse: maximumWriteWithoutResponse
-        )
-        metadata["chunk"] = "\(chunk.oneBasedIndex)/\(chunk.totalCount)"
-        metadata["chunkIndex"] = "\(chunk.index)"
-        metadata["chunkBytes"] = "\(chunk.data.count)"
-        metadata["chunkRange"] = chunk.byteRangeDescription
-
-        if context.shouldLogFullHex || context.kind != .bitmapRow {
-            metadata["chunkHex"] = chunk.data.diagnosticHexString
         }
 
         return metadata

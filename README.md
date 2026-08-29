@@ -70,7 +70,7 @@ Confirmed physical examples:
 - Status response: `5178A30103000000B60BFF`
 - Feed 16 steps: `5178A1000200100057FF`
 
-The logical MX10 frame remains intact even when BLE cannot send it as one GATT write. The Bluetooth transport fragments the complete `51 78 ... CRC FF` frame according to CoreBluetooth's runtime `maximumWriteValueLength(for: .withoutResponse)` value. For the physical iPhone path observed at max write length `20`, a 56-byte A2 frame is transported as `[20, 20, 16]`; CRC and `FF` terminator appear once in the original logical frame.
+Real-device diagnostics showed CoreBluetooth can report `maximumWriteValueLength(for: .withoutResponse) = 20` immediately after connection, then later report `245` during a real print session. The Bluetooth transport queries the current value at print start and send time. Complete 56-byte A2 frames are written atomically whenever the current maximum is at least `56`; the app does not split MX10 protocol frames into separate application frames.
 
 ## Windows development workflow
 
@@ -114,7 +114,7 @@ The app includes a bounded in-app diagnostic log under Settings -> Developer -> 
 Printing is intentionally observable before new print features are added:
 
 - BLE lifecycle events are logged, including scan, discovery, connect, service/characteristic discovery, notifications, write attempts, backpressure, and `peripheralIsReady`.
-- BLE write diagnostics include `maximumWriteWithoutResponse`, logical frame size, chunk count, chunk sizes, backpressure row/chunk, and resume row/chunk.
+- BLE write diagnostics include cached and current write-without-response lengths, logical frame size, backpressure row/frame, and resume row/frame.
 - Print jobs use explicit lifecycle states: `queued`, `rendering`, `ready`, `sending`, `completed`, `failed`, and `cancelled`.
 - `PrintQueue` uses a 30 second inactivity timeout in the debug build path and must return to an idle/usable state after success, failure, disconnect, timeout, or cancellation.
 - Raster validation requires width `384` and `48` bytes per row. Invalid image decode or invalid raster output is shown to the user and is not silently enqueued.

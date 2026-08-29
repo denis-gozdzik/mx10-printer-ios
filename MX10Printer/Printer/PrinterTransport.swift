@@ -39,77 +39,6 @@ enum PrintPacketKind: String, Codable {
     case control
 }
 
-struct PrintFrameChunk: Equatable {
-    let index: Int
-    let totalCount: Int
-    let offset: Int
-    let data: Data
-
-    var oneBasedIndex: Int {
-        index + 1
-    }
-
-    var byteRangeDescription: String {
-        "\(offset)..<\(offset + data.count)"
-    }
-}
-
-enum PrintFrameFragmentationError: LocalizedError, Equatable {
-    case invalidMaximumLength(Int)
-
-    var errorDescription: String? {
-        switch self {
-        case .invalidMaximumLength(let maximumLength):
-            return "Maximum write-without-response length must be positive, received \(maximumLength)."
-        }
-    }
-}
-
-enum PrintFrameFragmenter {
-    static func chunks(for frame: Data, maximumLength: Int) throws -> [PrintFrameChunk] {
-        guard maximumLength > 0 else {
-            throw PrintFrameFragmentationError.invalidMaximumLength(maximumLength)
-        }
-
-        if frame.count <= maximumLength {
-            return [
-                PrintFrameChunk(
-                    index: 0,
-                    totalCount: 1,
-                    offset: 0,
-                    data: frame
-                )
-            ]
-        }
-
-        var chunks: [PrintFrameChunk] = []
-        var offset = 0
-
-        while offset < frame.count {
-            let endOffset = min(offset + maximumLength, frame.count)
-            chunks.append(
-                PrintFrameChunk(
-                    index: chunks.count,
-                    totalCount: 0,
-                    offset: offset,
-                    data: Data(frame[offset..<endOffset])
-                )
-            )
-            offset = endOffset
-        }
-
-        let totalCount = chunks.count
-        return chunks.map {
-            PrintFrameChunk(
-                index: $0.index,
-                totalCount: totalCount,
-                offset: $0.offset,
-                data: $0.data
-            )
-        }
-    }
-}
-
 struct PrinterTransportConfiguration: Equatable, Codable {
     var interPacketDelayNanoseconds: UInt64
 
@@ -161,6 +90,8 @@ enum PrintTransportError: LocalizedError, Equatable {
     case disconnected
     case writeCharacteristicMissing
     case peripheralUnavailable
+    case invalidMaximumWriteLength(Int)
+    case maximumWriteLengthTooSmall(frameBytes: Int, currentMaximum: Int, cachedMaximum: Int?)
     case concurrentPeripheralReadyWait
     case cancelled
 
@@ -174,6 +105,11 @@ enum PrintTransportError: LocalizedError, Equatable {
             return "AE01 write characteristic is missing."
         case .peripheralUnavailable:
             return "Printer peripheral is unavailable."
+        case .invalidMaximumWriteLength(let currentMaximum):
+            return "Maximum write-without-response length must be positive, received \(currentMaximum)."
+        case .maximumWriteLengthTooSmall(let frameBytes, let currentMaximum, let cachedMaximum):
+            let cachedDescription = cachedMaximum.map { "\($0)" } ?? "unknown"
+            return "Current write-without-response length \(currentMaximum) is too small for \(frameBytes)-byte MX10 frame; cached value was \(cachedDescription)."
         case .concurrentPeripheralReadyWait:
             return "A write-without-response readiness wait is already active."
         case .cancelled:
@@ -185,6 +121,7 @@ enum PrintTransportError: LocalizedError, Equatable {
 protocol PrintFrameTransport: AnyObject {
     var canSendPrintData: Bool { get }
     var maxWriteWithoutResponseLength: Int? { get }
+    var currentMaximumWriteWithoutResponse: Int? { get }
     var isReadyForWriteWithoutResponse: Bool { get }
     var transportState: PrinterTransportState { get }
     var onTransportActivity: ((PrintJobProgressActivity) -> Void)? { get set }

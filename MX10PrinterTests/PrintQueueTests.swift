@@ -27,6 +27,7 @@ final class PrintQueueTests: XCTestCase {
         XCTAssertTrue(queue.pendingJobs.isEmpty)
         XCTAssertNil(queue.currentJob)
         XCTAssertFalse(queue.isPrinting)
+        XCTAssertFalse(queue.hasActiveOrPendingJob)
     }
 
     func testPrintQueueClearsActiveStateAfterTransportError() async throws {
@@ -44,6 +45,7 @@ final class PrintQueueTests: XCTestCase {
         XCTAssertTrue(queue.pendingJobs.isEmpty)
         XCTAssertNil(queue.currentJob)
         XCTAssertFalse(queue.isPrinting)
+        XCTAssertFalse(queue.hasActiveOrPendingJob)
     }
 
     func testPrintQueueClearsActiveStateAfterTimeout() async throws {
@@ -67,6 +69,7 @@ final class PrintQueueTests: XCTestCase {
         XCTAssertTrue(queue.failedJobs.first?.message.contains("PRINT_TIMEOUT") == true)
         XCTAssertNil(queue.currentJob)
         XCTAssertFalse(queue.isPrinting)
+        XCTAssertFalse(queue.hasActiveOrPendingJob)
     }
 
     func testPrintQueueClearsActiveStateAfterDisconnectError() async throws {
@@ -84,6 +87,7 @@ final class PrintQueueTests: XCTestCase {
         XCTAssertEqual(queue.failedJobs.first?.job.lifecycle, .failed)
         XCTAssertNil(queue.currentJob)
         XCTAssertFalse(queue.isPrinting)
+        XCTAssertFalse(queue.hasActiveOrPendingJob)
     }
 
     func testPrintQueueCancelsCurrentJobAndBecomesUsable() async throws {
@@ -107,6 +111,7 @@ final class PrintQueueTests: XCTestCase {
         XCTAssertEqual(queue.cancelledJobs.first?.id, job.id)
         XCTAssertNil(queue.currentJob)
         XCTAssertFalse(queue.isPrinting)
+        XCTAssertFalse(queue.hasActiveOrPendingJob)
     }
 
     func testExternalDisconnectRecoveryFailsCurrentJob() async throws {
@@ -126,6 +131,63 @@ final class PrintQueueTests: XCTestCase {
         XCTAssertEqual(queue.failedJobs.first?.job.id, job.id)
         XCTAssertNil(queue.currentJob)
         XCTAssertFalse(queue.isPrinting)
+        XCTAssertFalse(queue.hasActiveOrPendingJob)
+    }
+
+    func testPeripheralReadyActivityDoesNotRewindPrintedRowProgress() async throws {
+        let queue = makeQueue()
+        let printer = StalePeripheralReadyPrinter()
+        let job = PrintJob(
+            documentID: UUID(),
+            rows: Array(repeating: Data(repeating: 0x60, count: BitmapRasterizer.rowByteCount), count: 3)
+        )
+
+        queue.enqueue(job, printer: printer)
+
+        try await waitUntil {
+            printer.didSendStalePeripheralReady
+        }
+
+        XCTAssertEqual(queue.currentJob?.currentRow, 2)
+        XCTAssertEqual(queue.currentStatusText, "Printing 2 / 3")
+
+        printer.finish()
+
+        try await waitUntil {
+            queue.completedJobs.count == 1
+        }
+
+        XCTAssertEqual(queue.completedJobs.first?.currentRow, 3)
+        XCTAssertFalse(queue.hasActiveOrPendingJob)
+    }
+
+    func testDuplicatePrintTapCannotEnqueueSecondActiveJob() async throws {
+        let queue = makeQueue()
+        let printer = CancellablePrinter()
+        let firstJob = makeJob(byte: 0x70)
+        let duplicateJob = makeJob(byte: 0x71)
+
+        XCTAssertTrue(queue.enqueueIfIdle(firstJob, printer: printer))
+        XCTAssertFalse(queue.enqueueIfIdle(duplicateJob, printer: printer))
+
+        try await waitUntil {
+            queue.currentJob?.id == firstJob.id
+        }
+
+        XCTAssertTrue(queue.pendingJobs.isEmpty)
+        XCTAssertEqual(queue.currentJob?.id, firstJob.id)
+
+        queue.cancelCurrentJob()
+
+        try await waitUntil {
+            queue.cancelledJobs.count == 1
+        }
+
+        XCTAssertEqual(queue.cancelledJobs.first?.id, firstJob.id)
+        XCTAssertTrue(queue.completedJobs.isEmpty)
+        XCTAssertTrue(queue.failedJobs.isEmpty)
+        XCTAssertNil(queue.currentJob)
+        XCTAssertFalse(queue.hasActiveOrPendingJob)
     }
 
     private func makeQueue(
@@ -249,5 +311,67 @@ private final class CancellablePrinter: PrintJobPrinting {
 
     func cancelCurrentPrint() {
         cancelCalled = true
+    }
+}
+
+private final class StalePeripheralReadyPrinter: PrintJobPrinting {
+    private(set) var didSendStalePeripheralReady = false
+    private var finishContinuation: CheckedContinuation<Void, Never>?
+
+    func print(
+        job: PrintJob,
+        progress: @escaping (PrintJobProgress) -> Void
+    ) async throws {
+        progress(
+            PrintJobProgress(
+                jobID: job.id,
+                currentRow: 1,
+                totalRows: job.rowCount,
+                bytesSent: 56,
+                timestamp: Date(),
+                activity: .rowSent
+            )
+        )
+        progress(
+            PrintJobProgress(
+                jobID: job.id,
+                currentRow: 2,
+                totalRows: job.rowCount,
+                bytesSent: 112,
+                timestamp: Date(),
+                activity: .rowSent
+            )
+        )
+        progress(
+            PrintJobProgress(
+                jobID: job.id,
+                currentRow: 1,
+                totalRows: job.rowCount,
+                bytesSent: 56,
+                timestamp: Date(),
+                activity: .peripheralReady
+            )
+        )
+        didSendStalePeripheralReady = true
+
+        await withCheckedContinuation { continuation in
+            finishContinuation = continuation
+        }
+
+        progress(
+            PrintJobProgress(
+                jobID: job.id,
+                currentRow: 3,
+                totalRows: job.rowCount,
+                bytesSent: 168,
+                timestamp: Date(),
+                activity: .rowSent
+            )
+        )
+    }
+
+    func finish() {
+        finishContinuation?.resume()
+        finishContinuation = nil
     }
 }

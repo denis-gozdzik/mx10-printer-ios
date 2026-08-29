@@ -3,69 +3,98 @@ import XCTest
 
 @MainActor
 final class MX10PrinterTransportTests: XCTestCase {
-    func testPrinterResumesAtSecondChunkAfterBackpressure() async throws {
+    func testPrinterUsesFreshMaximumWriteLengthAfterInitialTwenty() async throws {
         let transport = MockFrameTransport()
         transport.maxWriteWithoutResponseLength = 20
-        transport.waitBeforeChunkIndexes = [1]
-        let printer = MX10Printer(
-            transport: transport,
-            configuration: MX10PrintConfiguration(
-                transport: PrinterTransportConfiguration(interPacketDelayNanoseconds: 0)
-            ),
-            logger: makeLogger()
-        )
-        let job = makeJob(rowCount: 1)
-        var progressEvents: [PrintJobProgress] = []
+        transport.maximumWriteReadings = [245, 245]
+        let printer = makePrinter(transport: transport)
+
+        try await printer.print(job: makeJob(rowCount: 1)) { _ in }
+
+        XCTAssertEqual(transport.beginMaximumObservations.first?.cached, 20)
+        XCTAssertEqual(transport.beginMaximumObservations.first?.current, 245)
+        XCTAssertEqual(transport.writeMaximumObservations.first?.current, 245)
+        XCTAssertEqual(transport.sentFrames.count, 1)
+        XCTAssertEqual(transport.sentFrames.first?.frame.count, 56)
+    }
+
+    func testFiftySixByteA2FrameIsAcceptedWhenFreshMaximumIsTwoFortyFive() async throws {
+        let transport = MockFrameTransport()
+        transport.maxWriteWithoutResponseLength = 20
+        transport.maximumWriteReadings = [245, 245]
+        let printer = makePrinter(transport: transport)
+
+        try await printer.print(job: makeJob(rowCount: 1)) { _ in }
+
+        XCTAssertEqual(transport.sentFrames.map { $0.frame.count }, [56])
+        XCTAssertEqual(transport.sentFrames.map { $0.frame[2] }, [0xA2])
+        XCTAssertEqual(transport.transportState, .completed)
+    }
+
+    func testFiftySixByteA2FrameIsNotBlindlyFragmentedWhenFreshMaximumIsTooSmall() async throws {
+        let transport = MockFrameTransport()
+        transport.maxWriteWithoutResponseLength = 20
+        transport.maximumWriteReadings = [20, 20]
+        let printer = makePrinter(transport: transport)
+
+        do {
+            try await printer.print(job: makeJob(rowCount: 1)) { _ in }
+            XCTFail("Expected max write length failure")
+        } catch let error as PrintTransportError {
+            XCTAssertEqual(
+                error,
+                .maximumWriteLengthTooSmall(frameBytes: 56, currentMaximum: 20, cachedMaximum: 20)
+            )
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        XCTAssertTrue(transport.sentFrames.isEmpty)
+        XCTAssertEqual(transport.transportState, .failed)
+    }
+
+    func testPrinterProgressMovesFromRowOneThroughRowN() async throws {
+        let transport = MockFrameTransport()
+        transport.maximumWriteReadings = Array(repeating: 245, count: 5)
+        let printer = makePrinter(transport: transport)
+        var rowProgress: [Int] = []
+
+        try await printer.print(job: makeJob(rowCount: 4)) { progress in
+            if progress.activity == .rowSent {
+                rowProgress.append(progress.currentRow)
+            }
+        }
+
+        XCTAssertEqual(rowProgress, [1, 2, 3, 4])
+        XCTAssertEqual(transport.sentFrames.count, 4)
+    }
+
+    func testBackpressureResumesSameRowWithoutDuplication() async throws {
+        let transport = MockFrameTransport()
+        transport.maximumWriteReadings = [245, 245, 245]
+        transport.waitBeforeFrameIndexes = [1]
+        let printer = makePrinter(transport: transport)
+        let job = makeJob(rowCount: 2)
 
         let task = Task {
-            try await printer.print(job: job) { progress in
-                progressEvents.append(progress)
-            }
+            try await printer.print(job: job) { _ in }
         }
 
         try await waitUntil {
             transport.didBackpressure
         }
-        XCTAssertTrue(transport.didBackpressure)
-        XCTAssertEqual(transport.sentChunks.map { $0.chunk.index }, [0])
+        XCTAssertEqual(transport.sentFrames.map { $0.context.rowIndex }, [0])
 
         transport.markPeripheralReady()
         try await task.value
 
-        XCTAssertEqual(transport.sentFrames.count, 1)
-        XCTAssertEqual(transport.sentChunks.map { $0.chunk.index }, [0, 1, 2])
-        XCTAssertEqual(transport.transportState, .completed)
-        XCTAssertEqual(progressEvents.last?.activity, .completed)
-        XCTAssertEqual(progressEvents.last?.currentRow, 1)
-    }
-
-    func testPrinterFragmentsPacketLargerThanMaximumWriteLength() async throws {
-        let transport = MockFrameTransport()
-        transport.maxWriteWithoutResponseLength = 20
-        let printer = MX10Printer(
-            transport: transport,
-            configuration: MX10PrintConfiguration(
-                transport: PrinterTransportConfiguration(interPacketDelayNanoseconds: 0)
-            ),
-            logger: makeLogger()
-        )
-
-        try await printer.print(job: makeJob(rowCount: 1)) { _ in }
-
-        XCTAssertEqual(transport.sentFrames.count, 1)
-        XCTAssertEqual(transport.sentChunks.map { $0.chunk.data.count }, [20, 20, 16])
+        XCTAssertEqual(transport.sentFrames.map { $0.context.rowIndex }, [0, 1])
         XCTAssertEqual(transport.transportState, .completed)
     }
 
     func testPrinterSendsRowsBeforeFeedAndReportsBytes() async throws {
         let transport = MockFrameTransport()
-        let printer = MX10Printer(
-            transport: transport,
-            configuration: MX10PrintConfiguration(
-                transport: PrinterTransportConfiguration(interPacketDelayNanoseconds: 0)
-            ),
-            logger: makeLogger()
-        )
+        let printer = makePrinter(transport: transport)
         let job = PrintJob(
             documentID: UUID(),
             rows: [
@@ -85,89 +114,13 @@ final class MX10PrinterTransportTests: XCTestCase {
         XCTAssertEqual(progressEvents.last?.bytesSent, 56 + 56 + 10)
     }
 
-    func testCancellationBetweenChunksStopsRemainingChunks() async throws {
-        let transport = MockFrameTransport()
-        transport.maxWriteWithoutResponseLength = 20
-        transport.cancelBeforeChunkIndexes = [1]
-        let printer = MX10Printer(
+    private func makePrinter(transport: MockFrameTransport) -> MX10Printer {
+        MX10Printer(
             transport: transport,
             configuration: MX10PrintConfiguration(
                 transport: PrinterTransportConfiguration(interPacketDelayNanoseconds: 0)
             ),
             logger: makeLogger()
-        )
-
-        do {
-            try await printer.print(job: makeJob(rowCount: 1)) { _ in }
-            XCTFail("Expected cancellation")
-        } catch let error as PrintTransportError {
-            XCTAssertEqual(error, .cancelled)
-        } catch {
-            XCTFail("Unexpected error: \(error)")
-        }
-
-        XCTAssertEqual(transport.sentChunks.map { $0.chunk.index }, [0])
-        XCTAssertEqual(transport.transportState, .cancelled)
-    }
-
-    func testDisconnectBetweenChunksFailsJobCleanly() async throws {
-        let transport = MockFrameTransport()
-        transport.maxWriteWithoutResponseLength = 20
-        transport.disconnectBeforeChunkIndexes = [1]
-        let printer = MX10Printer(
-            transport: transport,
-            configuration: MX10PrintConfiguration(
-                transport: PrinterTransportConfiguration(interPacketDelayNanoseconds: 0)
-            ),
-            logger: makeLogger()
-        )
-
-        do {
-            try await printer.print(job: makeJob(rowCount: 1)) { _ in }
-            XCTFail("Expected disconnect")
-        } catch let error as PrintTransportError {
-            XCTAssertEqual(error, .disconnected)
-        } catch {
-            XCTFail("Unexpected error: \(error)")
-        }
-
-        XCTAssertEqual(transport.sentChunks.map { $0.chunk.index }, [0])
-        XCTAssertEqual(transport.transportState, .failed)
-    }
-
-    func testRowProgressWaitsForFinalChunkAndRowsStaySequential() async throws {
-        let transport = MockFrameTransport()
-        transport.maxWriteWithoutResponseLength = 20
-        var events: [String] = []
-        transport.onChunkSent = { chunk, context in
-            events.append("chunk-\(context.rowIndex ?? -1)-\(chunk.index)")
-        }
-        let printer = MX10Printer(
-            transport: transport,
-            configuration: MX10PrintConfiguration(
-                transport: PrinterTransportConfiguration(interPacketDelayNanoseconds: 0)
-            ),
-            logger: makeLogger()
-        )
-
-        try await printer.print(job: makeJob(rowCount: 2)) { progress in
-            if progress.activity == .rowSent {
-                events.append("rowSent-\(progress.currentRow)")
-            }
-        }
-
-        XCTAssertEqual(
-            events,
-            [
-                "chunk-0-0",
-                "chunk-0-1",
-                "chunk-0-2",
-                "rowSent-1",
-                "chunk-1-0",
-                "chunk-1-1",
-                "chunk-1-2",
-                "rowSent-2"
-            ]
         )
     }
 
@@ -205,79 +158,73 @@ final class MX10PrinterTransportTests: XCTestCase {
 private final class MockFrameTransport: PrintFrameTransport {
     var canSendPrintData = true
     var maxWriteWithoutResponseLength: Int? = 512
+    var currentMaximumWriteWithoutResponse: Int?
     var isReadyForWriteWithoutResponse = true
     var transportState: PrinterTransportState = .idle
     var onTransportActivity: ((PrintJobProgressActivity) -> Void)?
-    var waitBeforeChunkIndexes: Set<Int> = []
-    var cancelBeforeChunkIndexes: Set<Int> = []
-    var disconnectBeforeChunkIndexes: Set<Int> = []
-    var onChunkSent: ((PrintFrameChunk, PrintPacketContext) -> Void)?
+    var maximumWriteReadings: [Int] = []
+    var waitBeforeFrameIndexes: Set<Int> = []
     private(set) var didBackpressure = false
     private(set) var sentFrames: [(frame: Data, context: PrintPacketContext)] = []
-    private(set) var sentChunks: [(chunk: PrintFrameChunk, context: PrintPacketContext)] = []
+    private(set) var beginMaximumObservations: [(cached: Int?, current: Int)] = []
+    private(set) var writeMaximumObservations: [(cached: Int?, current: Int, frameBytes: Int)] = []
 
     private var readinessContinuation: CheckedContinuation<Void, Never>?
+    private var frameIndex = 0
     private var cancelled = false
-    private var disconnected = false
 
     func beginPrintTransport(
         jobID: UUID,
         totalRows: Int,
         configuration: PrinterTransportConfiguration
     ) {
-        transportState = .preparing
         cancelled = false
-        disconnected = false
+        transportState = .preparing
+        let cached = maxWriteWithoutResponseLength
+        let current = readFreshMaximum(defaultValue: cached ?? 512)
+        beginMaximumObservations.append((cached: cached, current: current))
     }
 
     func sendFrame(_ frame: Data, context: PrintPacketContext) async throws {
-        let maximum = maxWriteWithoutResponseLength ?? frame.count
-        let chunks = try PrintFrameFragmenter.chunks(for: frame, maximumLength: maximum)
-
-        for chunk in chunks {
-            if cancelled {
-                throw PrintTransportError.cancelled
-            }
-
-            if disconnected {
-                transportState = .failed
-                throw PrintTransportError.disconnected
-            }
-
-            if cancelBeforeChunkIndexes.contains(chunk.index) {
-                cancelActiveTransport()
-                throw PrintTransportError.cancelled
-            }
-
-            if disconnectBeforeChunkIndexes.contains(chunk.index) {
-                disconnected = true
-                transportState = .failed
-                throw PrintTransportError.disconnected
-            }
-
-            if waitBeforeChunkIndexes.remove(chunk.index) != nil {
-                didBackpressure = true
-                isReadyForWriteWithoutResponse = false
-                transportState = .waitingForPeripheralReady
-                await withCheckedContinuation { continuation in
-                    readinessContinuation = continuation
-                }
-            }
-
-            if cancelled {
-                throw PrintTransportError.cancelled
-            }
-
-            if disconnected {
-                transportState = .failed
-                throw PrintTransportError.disconnected
-            }
-
-            transportState = .sending
-            sentChunks.append((chunk, context))
-            onChunkSent?(chunk, context)
+        if cancelled {
+            throw PrintTransportError.cancelled
         }
 
+        let cached = maxWriteWithoutResponseLength
+        let current = readFreshMaximum(defaultValue: frame.count)
+        writeMaximumObservations.append((cached: cached, current: current, frameBytes: frame.count))
+
+        guard current > 0 else {
+            transportState = .failed
+            throw PrintTransportError.invalidMaximumWriteLength(current)
+        }
+
+        guard frame.count <= current else {
+            transportState = .failed
+            throw PrintTransportError.maximumWriteLengthTooSmall(
+                frameBytes: frame.count,
+                currentMaximum: current,
+                cachedMaximum: cached
+            )
+        }
+
+        let currentFrameIndex = frameIndex
+        frameIndex += 1
+
+        if waitBeforeFrameIndexes.remove(currentFrameIndex) != nil {
+            didBackpressure = true
+            isReadyForWriteWithoutResponse = false
+            transportState = .waitingForPeripheralReady
+            await withCheckedContinuation { continuation in
+                readinessContinuation = continuation
+            }
+        }
+
+        if cancelled {
+            throw PrintTransportError.cancelled
+        }
+
+        transportState = .sending
         sentFrames.append((frame, context))
     }
 
@@ -298,8 +245,20 @@ private final class MockFrameTransport: PrintFrameTransport {
 
     func markPeripheralReady() {
         isReadyForWriteWithoutResponse = true
-        onTransportActivity?(.peripheralReady)
         readinessContinuation?.resume()
         readinessContinuation = nil
+    }
+
+    private func readFreshMaximum(defaultValue: Int) -> Int {
+        let current: Int
+        if maximumWriteReadings.isEmpty {
+            current = currentMaximumWriteWithoutResponse ?? maxWriteWithoutResponseLength ?? defaultValue
+        } else {
+            current = maximumWriteReadings.removeFirst()
+        }
+
+        currentMaximumWriteWithoutResponse = current
+        maxWriteWithoutResponseLength = current
+        return current
     }
 }

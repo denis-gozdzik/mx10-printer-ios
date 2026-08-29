@@ -94,45 +94,64 @@ struct PrintEditorView: View {
     }
 
     private var editorToolbar: some View {
-        HStack(spacing: 12) {
-            Button {
-                let elementID = document.addTextElement()
-                selectedElementID = elementID
-                focusTextInspector()
-                logger.log(.editor, "text element added", metadata: ["element": elementID.uuidString])
-                saveDocument()
-                refreshPreview()
-            } label: {
-                Label("Text", systemImage: "textformat")
-            }
-
-            PhotosPicker(selection: $photoSelection, matching: .images) {
-                Label("Image", systemImage: "photo")
-            }
-
-            Button {
-                isPreviewMode.toggle()
-                refreshPreview()
-            } label: {
-                Label(isPreviewMode ? "Editor" : "Preview", systemImage: isPreviewMode ? "rectangle.and.pencil.and.ellipsis" : "eye")
-            }
-
-            Button {
-                printCurrentDocument()
-            } label: {
-                Label("Print", systemImage: "printer")
-            }
-            .disabled(printUnavailableReason != nil)
-
-            if printQueue.isPrinting {
-                Button(role: .destructive) {
-                    printQueue.cancelCurrentJob()
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                Button {
+                    let elementID = document.addTextElement()
+                    selectedElementID = elementID
+                    focusTextInspector()
+                    logger.log(.editor, "text element added", metadata: ["element": elementID.uuidString])
+                    saveDocument()
+                    refreshPreview()
                 } label: {
-                    Label("Cancel Print", systemImage: "xmark.circle")
+                    Label("Text", systemImage: "textformat")
+                }
+
+                PhotosPicker(selection: $photoSelection, matching: .images) {
+                    Label("Image", systemImage: "photo")
+                }
+
+                Button {
+                    isPreviewMode.toggle()
+                    refreshPreview()
+                } label: {
+                    Label(isPreviewMode ? "Edit" : "Preview", systemImage: isPreviewMode ? "rectangle.and.pencil.and.ellipsis" : "eye")
+                }
+
+                Button {
+                    printCurrentDocument()
+                } label: {
+                    Label("Print", systemImage: "printer")
+                }
+                .disabled(printUnavailableReason != nil)
+
+                if printQueue.isPrinting {
+                    Button(role: .destructive) {
+                        dismissEditorKeyboard()
+                        printQueue.cancelCurrentJob()
+                    } label: {
+                        Label("Cancel", systemImage: "xmark.circle")
+                    }
                 }
             }
+            .buttonStyle(.bordered)
+            .labelStyle(.titleAndIcon)
+            .controlSize(.regular)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .padding(.vertical, 2)
         }
-        .buttonStyle(.bordered)
+        .scrollIndicators(.hidden)
+    }
+
+    private func dismissEditorKeyboard() {
+        isTextInspectorFocused = false
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
     }
 
     private var queueStatus: some View {
@@ -679,6 +698,7 @@ struct PrintEditorView: View {
     }
 
     private func printCurrentDocument() {
+        dismissEditorKeyboard()
         logger.log(
             .app,
             "Print button tapped",
@@ -709,8 +729,11 @@ struct PrintEditorView: View {
                 preview: preview,
                 preferences: preferencesStore.preferences
             )
-            printQueue.enqueue(job, printer: MX10Printer(bluetoothManager: bluetoothManager))
-            statusMessage = "Queued \(job.rows.count) rows"
+            if printQueue.enqueueIfIdle(job, printer: MX10Printer(bluetoothManager: bluetoothManager)) {
+                statusMessage = "Queued \(job.rows.count) rows"
+            } else {
+                statusMessage = "Another print job is active"
+            }
         } catch {
             statusMessage = "Render failed: \(error.localizedDescription)"
             logger.log(.error, "print job build failed", metadata: ["error": error.localizedDescription])
@@ -732,7 +755,7 @@ struct PrintEditorView: View {
     }
 
     private var printUnavailableReason: String? {
-        if printQueue.isPrinting {
+        if printQueue.hasActiveOrPendingJob {
             return "Another print job is active"
         }
 

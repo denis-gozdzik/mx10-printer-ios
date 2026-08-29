@@ -40,7 +40,7 @@ final class MX10Printer: PrintJobPrinting {
     }
 
     var diagnosticStateDescription: String {
-        "transport=\(transport.transportState.rawValue) ready=\(transport.isReadyForWriteWithoutResponse) maxWrite=\(transport.maxWriteWithoutResponseLength ?? -1)"
+        "transport=\(transport.transportState.rawValue) ready=\(transport.isReadyForWriteWithoutResponse) cachedMaxWrite=\(transport.maxWriteWithoutResponseLength ?? -1) currentMaxWrite=\(transport.currentMaximumWriteWithoutResponse ?? -1)"
     }
 
     func requestStatus() {

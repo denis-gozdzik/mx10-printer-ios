@@ -54,8 +54,16 @@ final class PrintQueue: ObservableObject {
         currentJob != nil
     }
 
+    var hasActiveOrPendingJob: Bool {
+        currentJob != nil || !pendingJobs.isEmpty
+    }
+
     var currentStatusText: String {
         guard let currentJob else {
+            if !pendingJobs.isEmpty {
+                return "Queued"
+            }
+
             if let cancelled = cancelledJobs.last,
                (completedJobs.last?.completedAt ?? .distantPast) < (cancelled.completedAt ?? .distantPast),
                (failedJobs.last?.job.completedAt ?? .distantPast) < (cancelled.completedAt ?? .distantPast) {
@@ -106,6 +114,27 @@ final class PrintQueue: ObservableObject {
         }
 
         return "idle pending=\(pendingJobs.count) completed=\(completedJobs.count) failed=\(failedJobs.count) cancelled=\(cancelledJobs.count)"
+    }
+
+    @discardableResult
+    func enqueueIfIdle(_ job: PrintJob, printer: PrintJobPrinting) -> Bool {
+        guard !hasActiveOrPendingJob else {
+            logger.log(
+                .queue,
+                "enqueue rejected",
+                metadata: [
+                    "job": job.id.uuidString,
+                    "reason": "active or pending job exists",
+                    "currentJob": currentJob?.id.uuidString ?? "none",
+                    "pending": pendingJobs.count,
+                    "workerActive": "\(workerTask != nil)"
+                ]
+            )
+            return false
+        }
+
+        enqueue(job, printer: printer)
+        return true
     }
 
     func enqueue(_ job: PrintJob, printer: PrintJobPrinting) {
@@ -364,6 +393,8 @@ final class PrintQueue: ObservableObject {
 
         job.apply(progress: progress)
         currentJob = job
+        let uiStatus = currentStatusText
+        let uiProgressValue = progressFraction
         logger.log(
             .queue,
             "progress",
@@ -371,7 +402,9 @@ final class PrintQueue: ObservableObject {
                 "job": job.id.uuidString,
                 "activity": progress.activity.rawValue,
                 "row": "\(job.currentRow)/\(job.rowCount)",
-                "bytesSent": job.bytesSent
+                "bytesSent": job.bytesSent,
+                "uiStatus": uiStatus,
+                "uiProgressFraction": String(format: "%.4f", uiProgressValue)
             ]
         )
     }

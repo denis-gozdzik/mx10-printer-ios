@@ -16,7 +16,8 @@ This project records the verified MX10 printer behavior used by the application.
 - Notify characteristic UUID: AE02 (`Notify`)
 - Additional discovered UUIDs: AE03, AE04, AE05, AE10, AE3A, AE3B, AE3C
 - Intended transport path: CoreBluetooth -> AE30 -> AE01 -> MX10 -> AE02 -> CoreBluetooth
-- Physical iPhone testing observed `maximumWriteValueLength(for: .withoutResponse) = 20`; the app must use the runtime CoreBluetooth value, not a hard-coded limit.
+- Physical iPhone testing observed `maximumWriteValueLength(for: .withoutResponse) = 20` immediately after connection, but later during a real print session CoreBluetooth reported `245` and accepted complete 56-byte A2 frames.
+- The app must query the current CoreBluetooth write-without-response length at print start and send time. Do not permanently rely on the immediate post-connect value.
 
 ## Verified protocol framing
 
@@ -36,9 +37,7 @@ Where:
 - `CRC` is CRC-8 with polynomial `0x07`, initial value `0x00`
 - `FF` is the frame terminator
 
-The CRC is calculated only over payload bytes.
-
-BLE `Write Without Response` transport may fragment a complete logical MX10 frame across multiple GATT writes. Fragmentation happens only in the BLE transport layer after the full `51 78 ... CRC FF` frame has been built. Do not split, recalculate CRC, or append extra terminators inside `MX10Protocol`.
+The CRC is calculated only over payload bytes. A complete logical MX10 frame must be written atomically when the current CoreBluetooth write-without-response maximum can fit it. Do not split, recalculate CRC, or append extra terminators inside `MX10Protocol`.
 
 ## Verified commands
 
@@ -64,9 +63,10 @@ Verified examples:
 - The logger keeps a bounded 5000-entry ring buffer and persists the latest log locally as UTF-8 text.
 - Do not log Apple API keys, GitHub PATs, match passwords, certificates, or private signing material.
 - Raster row logging must summarize ordinary bitmap rows. Full HEX is allowed for initialization/status/control commands, the first three bitmap rows, the last three bitmap rows, and failures.
-- Fragmentation logging must include runtime `maximumWriteWithoutResponse`, logical `frameBytes`, chunk count, chunk sizes, row/chunk backpressure, and `peripheralIsReady` resume row/chunk context.
+- BLE write logging must include cached and current write-without-response lengths, logical `frameBytes`, row/frame backpressure, and `peripheralIsReady` resume row/frame context.
 - Print jobs must expose a lifecycle of `queued`, `rendering`, `ready`, `sending`, `completed`, `failed`, or `cancelled`.
 - `PrintQueue` must return to an idle/usable state after success, failure, timeout, cancellation, or disconnect.
+- `peripheralIsReady(toSendWriteWithoutResponse:)` only wakes the suspended sender. It must not update row progress or bytes sent.
 - The default print threshold is 128. A different diagnostic threshold value is a persisted user preference unless an explicit migration changes it; do not reset persisted print preferences during BLE work.
 
 ## Architecture rules
