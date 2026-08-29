@@ -41,6 +41,7 @@ targets:
         CFBundleVersion: "1"
         CFBundleIdentifier: pl.mx10printer.app
         CFBundleIconName: AppIcon
+        ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
         UIRequiresFullScreen: true
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]

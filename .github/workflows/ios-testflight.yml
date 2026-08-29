@@ -1,7 +1,16 @@
 name: iOS TestFlight
 
 on:
+  workflow_run:
+    workflows:
+      - iOS Build
+    types:
+      - completed
   workflow_dispatch:
+
+concurrency:
+  group: mx10-testflight
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -12,17 +21,28 @@ env:
   CONFIGURATION: Release
   APP_IDENTIFIER: pl.mx10printer.app
   MARKETING_VERSION: "1.0.0"
-  CURRENT_PROJECT_VERSION: ${{ github.run_number }}
   DEVELOPMENT_TEAM: ${{ secrets.TEAMID }}
   MATCH_GIT_URL: https://github.com/denis-gozdzik/MX10-Match-Secrets.git
 
 jobs:
   testflight:
+    if: >-
+      ${{
+        (github.event_name == 'workflow_dispatch' && github.ref_name == 'main') ||
+        (
+          github.event_name == 'workflow_run' &&
+          github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.head_branch == 'main' &&
+          github.event.workflow_run.event != 'pull_request'
+        )
+      }}
     runs-on: macos-latest
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - name: Select Xcode
         run: sudo xcode-select -switch /Applications/Xcode_26.6.app
@@ -31,10 +51,20 @@ jobs:
         run: xcodebuild -version
 
       - name: Install XcodeGen
-        run: brew install xcodegen
+        run: |
+          if command -v xcodegen >/dev/null 2>&1; then
+            xcodegen --version
+          else
+            brew install xcodegen
+          fi
 
       - name: Generate Xcode project
         run: xcodegen generate
+
+      - name: Verify export compliance plist
+        run: |
+          value=$(/usr/libexec/PlistBuddy -c "Print :ITSAppUsesNonExemptEncryption" MX10Printer/Info.plist)
+          test "$value" = "false"
 
       - name: List project schemes
         run: xcodebuild -list -project MX10Printer.xcodeproj
@@ -48,23 +78,14 @@ jobs:
             -showBuildSettings \
             | grep -E '^[[:space:]]*(PRODUCT_BUNDLE_IDENTIFIER|CODE_SIGN_STYLE|CODE_SIGN_IDENTITY|DEVELOPMENT_TEAM|PROVISIONING_PROFILE_SPECIFIER) ='
 
-      - name: Run unit tests
-        run: |
-          xcodebuild \
-            -project MX10Printer.xcodeproj \
-            -scheme MX10Printer \
-            -sdk iphonesimulator \
-            -destination 'platform=iOS Simulator,name=iPad (A16)' \
-            test
-
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.2'
           bundler-cache: true
 
-      - name: Install Ruby dependencies
-        run: bundle install
+      - name: Show Fastlane version
+        run: bundle exec fastlane --version
 
       - name: Validate required secrets
         shell: bash
