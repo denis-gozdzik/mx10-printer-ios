@@ -114,6 +114,29 @@ final class MX10PrinterTransportTests: XCTestCase {
         XCTAssertEqual(progressEvents.last?.bytesSent, 56 + 56 + 10)
     }
 
+    func testBitmapRowDiagnosticsAreMarkedForFirstLastAndEveryFiftiethRow() {
+        let totalRows = 640
+
+        let loggedRows = (0..<totalRows)
+            .map { PrintPacketContext.bitmapRow(jobID: UUID(), rowIndex: $0, totalRows: totalRows) }
+            .enumerated()
+            .filter { $0.element.shouldLogFrame }
+            .map { $0.offset + 1 }
+
+        XCTAssertTrue([1, 2, 3].allSatisfy(loggedRows.contains))
+        XCTAssertTrue([638, 639, 640].allSatisfy(loggedRows.contains))
+        XCTAssertTrue([50, 100, 150, 600].allSatisfy(loggedRows.contains))
+        XCTAssertFalse(loggedRows.contains(4))
+        XCTAssertFalse(loggedRows.contains(49))
+        XCTAssertFalse(loggedRows.contains(51))
+        XCTAssertFalse(
+            PrintPacketContext.bitmapRow(jobID: UUID(), rowIndex: 49, totalRows: totalRows).shouldLogFullHex
+        )
+        XCTAssertTrue(
+            PrintPacketContext.bitmapRow(jobID: UUID(), rowIndex: 639, totalRows: totalRows).shouldLogFullHex
+        )
+    }
+
     private func makePrinter(transport: MockFrameTransport) -> MX10Printer {
         MX10Printer(
             transport: transport,

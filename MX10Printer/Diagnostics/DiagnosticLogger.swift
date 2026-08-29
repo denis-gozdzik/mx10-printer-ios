@@ -37,7 +37,7 @@ struct DiagnosticLogEntry: Identifiable, Equatable {
     }
 
     var formattedLine: String {
-        var line = "\(Self.timestampFormatter.string(from: timestamp)) [\(category.rawValue)] \(message)"
+        var line = "\(Self.timestampString(from: timestamp)) [\(category.rawValue)] \(message)"
         let metadataText = metadata
             .sorted { $0.key < $1.key }
             .map { "\($0.key)=\($0.value)" }
@@ -50,12 +50,21 @@ struct DiagnosticLogEntry: Identifiable, Equatable {
         return line
     }
 
+    private static func timestampString(from date: Date) -> String {
+        timestampFormatterLock.lock()
+        defer { timestampFormatterLock.unlock() }
+
+        return timestampFormatter.string(from: date)
+    }
+
     private static let timestampFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "HH:mm:ss.SSS"
         return formatter
     }()
+
+    private static let timestampFormatterLock = NSLock()
 }
 
 struct DiagnosticLogExportContext: Equatable {
@@ -97,19 +106,37 @@ final class DiagnosticLogger: ObservableObject {
 
     @Published private(set) var entries: [DiagnosticLogEntry] = []
 
+    typealias PersistenceWriter = (Data, URL) throws -> Void
+
     private let maxEntries: Int
     private let storageURL: URL
     private let fileManager: FileManager
+    private let persistenceDebounceInterval: TimeInterval
+    private let persistenceWriter: PersistenceWriter
+    private let persistenceQueue = DispatchQueue(label: "pl.mx10printer.diagnostic-log.persistence", qos: .utility)
+
+    private var pendingPersistenceWorkItem: DispatchWorkItem?
+    private var hasUnpersistedEntries = false
 
     init(
         maxEntries: Int = 5_000,
         storageURL: URL? = nil,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        persistenceDebounceInterval: TimeInterval = 1,
+        persistenceWriter: @escaping PersistenceWriter = { data, url in
+            try data.write(to: url, options: [.atomic])
+        }
     ) {
         self.maxEntries = max(1, maxEntries)
         self.fileManager = fileManager
         self.storageURL = storageURL ?? Self.defaultStorageURL(fileManager: fileManager)
+        self.persistenceDebounceInterval = max(0, persistenceDebounceInterval)
+        self.persistenceWriter = persistenceWriter
         loadPersistedLog()
+    }
+
+    deinit {
+        pendingPersistenceWorkItem?.cancel()
     }
 
     func log(
@@ -125,20 +152,51 @@ final class DiagnosticLogger: ObservableObject {
         )
 
         if Thread.isMainThread {
-            append(entry)
+            appendOnMain(entry)
         } else {
-            DispatchQueue.main.async { [weak self] in
-                self?.append(entry)
+            DispatchQueue.main.sync { [weak self] in
+                self?.appendOnMain(entry)
             }
         }
     }
 
     func clear() {
-        entries.removeAll()
-        persistLatestLog()
+        if Thread.isMainThread {
+            clearOnMain()
+        } else {
+            DispatchQueue.main.sync { [weak self] in
+                self?.clearOnMain()
+            }
+        }
     }
 
     func exportText(context: DiagnosticLogExportContext = .empty) -> String {
+        Self.exportText(context: context, entries: entriesSnapshot())
+    }
+
+    func writeExportFile(context: DiagnosticLogExportContext = .empty) throws -> URL {
+        let snapshot = entriesSnapshot()
+        let exportURL = storageURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("mx10-diagnostic-log.txt")
+
+        try persistenceQueue.sync {
+            try fileManager.createDirectory(
+                at: storageURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+
+            let data = Self.exportText(context: context, entries: snapshot).data(using: .utf8) ?? Data()
+            try persistenceWriter(data, exportURL)
+        }
+
+        return exportURL
+    }
+
+    private static func exportText(
+        context: DiagnosticLogExportContext,
+        entries: [DiagnosticLogEntry]
+    ) -> String {
         var lines: [String] = [
             "MX10Printer Diagnostic Log",
             "App version: \(context.appVersion)",
@@ -163,40 +221,74 @@ final class DiagnosticLogger: ObservableObject {
         return lines.joined(separator: "\n") + "\n"
     }
 
-    func writeExportFile(context: DiagnosticLogExportContext = .empty) throws -> URL {
-        try fileManager.createDirectory(
-            at: storageURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-
-        let exportURL = storageURL
-            .deletingLastPathComponent()
-            .appendingPathComponent("mx10-diagnostic-log.txt")
-
-        try exportText(context: context).data(using: .utf8)?.write(to: exportURL, options: [.atomic])
-        return exportURL
-    }
-
-    private func append(_ entry: DiagnosticLogEntry) {
+    private func appendOnMain(_ entry: DiagnosticLogEntry) {
         entries.append(entry)
 
         if entries.count > maxEntries {
             entries.removeFirst(entries.count - maxEntries)
         }
 
-        persistLatestLog()
+        schedulePersistLatestLog()
     }
 
-    private func persistLatestLog() {
-        do {
-            try fileManager.createDirectory(
-                at: storageURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            let data = entries.map(\.formattedLine).joined(separator: "\n").data(using: .utf8) ?? Data()
-            try data.write(to: storageURL, options: [.atomic])
-        } catch {
-            assertionFailure("Failed to persist diagnostic log: \(error.localizedDescription)")
+    private func clearOnMain() {
+        pendingPersistenceWorkItem?.cancel()
+        pendingPersistenceWorkItem = nil
+        hasUnpersistedEntries = false
+        entries.removeAll()
+        persistSnapshot([])
+    }
+
+    private func schedulePersistLatestLog() {
+        hasUnpersistedEntries = true
+
+        guard pendingPersistenceWorkItem == nil else {
+            return
+        }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.performScheduledPersist()
+        }
+        pendingPersistenceWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + persistenceDebounceInterval,
+            execute: workItem
+        )
+    }
+
+    private func performScheduledPersist() {
+        pendingPersistenceWorkItem = nil
+
+        guard hasUnpersistedEntries else {
+            return
+        }
+
+        hasUnpersistedEntries = false
+        persistSnapshot(entries)
+    }
+
+    private func persistSnapshot(_ snapshot: [DiagnosticLogEntry]) {
+        persistenceQueue.async { [fileManager, storageURL, persistenceWriter] in
+            do {
+                try fileManager.createDirectory(
+                    at: storageURL.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                let data = snapshot.map(\.formattedLine).joined(separator: "\n").data(using: .utf8) ?? Data()
+                try persistenceWriter(data, storageURL)
+            } catch {
+                assertionFailure("Failed to persist diagnostic log: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func entriesSnapshot() -> [DiagnosticLogEntry] {
+        if Thread.isMainThread {
+            return entries
+        }
+
+        return DispatchQueue.main.sync {
+            entries
         }
     }
 

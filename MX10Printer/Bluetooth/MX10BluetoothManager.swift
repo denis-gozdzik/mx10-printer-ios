@@ -669,16 +669,18 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
             )
         }
 
-        logger.log(
-            logCategory(for: context),
-            "write frame",
-            metadata: packetMetadata(
-                frame: frame,
-                context: context,
-                currentMaximumWriteWithoutResponse: currentMaximum,
-                cachedMaximumWriteWithoutResponse: cachedMaximum
+        if context.shouldLogFrame {
+            logger.log(
+                logCategory(for: context),
+                "write frame",
+                metadata: packetMetadata(
+                    frame: frame,
+                    context: context,
+                    currentMaximumWriteWithoutResponse: currentMaximum,
+                    cachedMaximumWriteWithoutResponse: cachedMaximum
+                )
             )
-        )
+        }
 
         try await waitUntilReadyToWrite(
             peripheral: peripheral,
