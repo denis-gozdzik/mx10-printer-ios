@@ -3,7 +3,6 @@ import Foundation
 enum MX10PrinterError: LocalizedError {
     case notReadyForPrintData
     case emptyPrintJob
-    case packetTooLarge(packetSize: Int, maximum: Int)
 
     var errorDescription: String? {
         switch self {
@@ -11,8 +10,6 @@ enum MX10PrinterError: LocalizedError {
             return "MX10 is not ready for print data."
         case .emptyPrintJob:
             return "The print job contains no raster rows."
-        case .packetTooLarge(let packetSize, let maximum):
-            return "Packet size \(packetSize) exceeds maximum write-without-response length \(maximum)."
         }
     }
 }
@@ -67,7 +64,6 @@ final class MX10Printer: PrintJobPrinting {
 
     func printRow(_ row: Data) async throws {
         let frame = try MX10Protocol.printRow(row)
-        try validateFrameFitsTransport(frame)
         try await transport.sendFrame(
             frame,
             context: .control(command: 0xA2, kind: .bitmapRow)
@@ -92,10 +88,6 @@ final class MX10Printer: PrintJobPrinting {
             do {
                 for (index, row) in rows.enumerated() {
                     let frame = try MX10Protocol.printRow(row)
-                    if let maximum = transport.maxWriteWithoutResponseLength, frame.count > maximum {
-                        throw MX10PrinterError.packetTooLarge(packetSize: frame.count, maximum: maximum)
-                    }
-
                     try await transport.sendFrame(
                         frame,
                         context: .bitmapRow(jobID: jobID, rowIndex: index, totalRows: rows.count)
@@ -186,7 +178,6 @@ final class MX10Printer: PrintJobPrinting {
                 try Task.checkCancellation()
 
                 let frame = try MX10Protocol.printRow(row)
-                try validateFrameFitsTransport(frame)
 
                 try await transport.sendFrame(
                     frame,
@@ -215,7 +206,6 @@ final class MX10Printer: PrintJobPrinting {
 
             if job.feedAfterPrintSteps > 0 {
                 let feedFrame = MX10Protocol.feed(steps: job.feedAfterPrintSteps)
-                try validateFrameFitsTransport(feedFrame)
                 try await transport.sendFrame(
                     feedFrame,
                     context: .control(
@@ -268,6 +258,15 @@ final class MX10Printer: PrintJobPrinting {
                 metadata: ["job": job.id.uuidString, "row": "\(currentRow)/\(job.rows.count)"]
             )
             throw PrintTransportError.cancelled
+        } catch PrintTransportError.cancelled {
+            transport.onTransportActivity = previousActivityHandler
+            transport.cancelActiveTransport()
+            logger.log(
+                .queue,
+                "print cancelled",
+                metadata: ["job": job.id.uuidString, "row": "\(currentRow)/\(job.rows.count)"]
+            )
+            throw PrintTransportError.cancelled
         } catch {
             transport.onTransportActivity = previousActivityHandler
             transport.failPrintTransport(jobID: job.id, reason: error.localizedDescription)
@@ -290,23 +289,6 @@ final class MX10Printer: PrintJobPrinting {
 
     private var printSequenceDescription: String {
         "bitmap rows; optional feed; no unverified A8/BB/A4/A6/AF/BE/BD/BF init sequence"
-    }
-
-    private func validateFrameFitsTransport(_ frame: Data) throws {
-        guard let maximum = transport.maxWriteWithoutResponseLength, frame.count > maximum else {
-            return
-        }
-
-        logger.log(
-            .error,
-            "packet too large for BLE withoutResponse",
-            metadata: [
-                "packetBytes": frame.count,
-                "maximumWriteWithoutResponse": maximum,
-                "hex": frame.diagnosticHexString
-            ]
-        )
-        throw MX10PrinterError.packetTooLarge(packetSize: frame.count, maximum: maximum)
     }
 
     private func sendControlFrame(

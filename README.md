@@ -28,7 +28,8 @@ The app follows a clean separation of concerns:
 Confirmed device and BLE settings from physical testing:
 
 - Device name: MX10
-- Primary service: AE30
+- Advertised service: AF30
+- Connected protocol service: AE30
 - Write characteristic: AE01 (`Write Without Response`)
 - Notify characteristic: AE02 (`Notify`)
 - Additional discovered UUIDs were seen but are not used yet: AE03, AE04, AE05, AE10, AE3A, AE3B, AE3C
@@ -61,12 +62,15 @@ Confirmed commands:
 - Status request: `A3`
 - Paper feed: `A1`
 - Print row: `A2`
+- A2 print-row frames are 56 bytes: 48 bytes of raster payload plus 8 bytes of protocol framing
 
 Confirmed physical examples:
 
 - Status request: `5178A30001000000FF`
 - Status response: `5178A30103000000B60BFF`
 - Feed 16 steps: `5178A1000200100057FF`
+
+The logical MX10 frame remains intact even when BLE cannot send it as one GATT write. The Bluetooth transport fragments the complete `51 78 ... CRC FF` frame according to CoreBluetooth's runtime `maximumWriteValueLength(for: .withoutResponse)` value. For the physical iPhone path observed at max write length `20`, a 56-byte A2 frame is transported as `[20, 20, 16]`; CRC and `FF` terminator appear once in the original logical frame.
 
 ## Windows development workflow
 
@@ -110,10 +114,12 @@ The app includes a bounded in-app diagnostic log under Settings -> Developer -> 
 Printing is intentionally observable before new print features are added:
 
 - BLE lifecycle events are logged, including scan, discovery, connect, service/characteristic discovery, notifications, write attempts, backpressure, and `peripheralIsReady`.
+- BLE write diagnostics include `maximumWriteWithoutResponse`, logical frame size, chunk count, chunk sizes, backpressure row/chunk, and resume row/chunk.
 - Print jobs use explicit lifecycle states: `queued`, `rendering`, `ready`, `sending`, `completed`, `failed`, and `cancelled`.
 - `PrintQueue` uses a 30 second inactivity timeout in the debug build path and must return to an idle/usable state after success, failure, disconnect, timeout, or cancellation.
 - Raster validation requires width `384` and `48` bytes per row. Invalid image decode or invalid raster output is shown to the user and is not silently enqueued.
 - The print preview and print job are built from the same render/raster path. A Developer option can show the final 1-bit raster preview exactly as it will be sent.
+- The default raster threshold is `128`. If diagnostics show a different threshold, that value comes from persisted user settings unless a future migration explicitly changes it.
 
 Compatible-printer protocol notes mention possible commands `A8`, `BB`, `A4`, `A6`, `AF`, `BE`, `BD`, and `BF`, but these remain unverified on this MX10 and are not sent by default. Findings are documented in `AGENTS.md` and guarded by the `MX10PrintConfiguration` / `MX10PrinterProfile` abstraction.
 
