@@ -141,7 +141,7 @@ platform :ios do
       api_key: api_key,
       ipa: "MX10Printer.ipa",
       skip_waiting_for_build_processing: false,
-      skip_submission: false,
+      skip_submission: true,
       submit_beta_review: false,
       distribute_external: false,
       notify_external_testers: false,
