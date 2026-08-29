@@ -39,13 +39,74 @@ jobs:
       - name: List project schemes
         run: xcodebuild -list -project MX10Printer.xcodeproj
 
+      - name: Create test simulator
+        id: test-simulator
+        run: |
+          eval "$(
+            python3 - <<'PY'
+          import json
+          import shlex
+          import subprocess
+
+          runtimes = json.loads(
+              subprocess.check_output(["xcrun", "simctl", "list", "runtimes", "--json"])
+          )["runtimes"]
+          ios_runtimes = [
+              runtime for runtime in runtimes
+              if runtime.get("isAvailable") and ".SimRuntime.iOS-" in runtime.get("identifier", "")
+          ]
+          if not ios_runtimes:
+              raise SystemExit("No available iOS simulator runtime found")
+
+          runtime = sorted(
+              ios_runtimes,
+              key=lambda item: tuple(int(part) for part in item.get("version", "0").split(".") if part.isdigit())
+          )[-1]
+          supported = {
+              device_type["identifier"]
+              for device_type in runtime.get("supportedDeviceTypes", [])
+          }
+
+          device_types = json.loads(
+              subprocess.check_output(["xcrun", "simctl", "list", "devicetypes", "--json"])
+          )["devicetypes"]
+          candidates = [
+              device_type for device_type in device_types
+              if device_type.get("identifier") in supported
+          ] or [
+              device_type for device_type in device_types
+              if "iPhone" in device_type.get("name", "")
+          ]
+
+          preferred_names = ["iPhone 17", "iPhone 16", "iPhone 15", "iPad (A16)"]
+          device_type = next(
+              (
+                  candidate for preferred in preferred_names
+                  for candidate in candidates
+                  if candidate.get("name") == preferred
+              ),
+              candidates[0]
+          )
+
+          print(f"runtime={shlex.quote(runtime['identifier'])}")
+          print(f"device_type={shlex.quote(device_type['identifier'])}")
+          print(f"device_name={shlex.quote(device_type['name'])}")
+          PY
+          )"
+
+          udid="$(xcrun simctl create MX10PrinterTests "$device_type" "$runtime")"
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+          echo "Using simulator: $device_name ($udid) on $runtime"
+          xcrun simctl boot "$udid" || true
+          xcrun simctl bootstatus "$udid" -b
+
       - name: Run unit tests
         run: |
           xcodebuild \
             -project MX10Printer.xcodeproj \
             -scheme MX10Printer \
             -sdk iphonesimulator \
-            -destination 'platform=iOS Simulator,name=iPad (A16)' \
+            -destination 'platform=iOS Simulator,id=${{ steps.test-simulator.outputs.udid }}' \
             test
 
       - name: Build app for iOS Simulator
