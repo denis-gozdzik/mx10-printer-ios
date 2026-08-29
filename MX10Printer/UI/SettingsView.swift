@@ -5,6 +5,7 @@ struct SettingsView: View {
 
     @ObservedObject var bluetoothManager: MX10BluetoothManager
     @ObservedObject var preferencesStore: PrintingPreferencesStore
+    @ObservedObject var printQueue: PrintQueue
 
     var body: some View {
         Form {
@@ -46,6 +47,17 @@ struct SettingsView: View {
             }
 
             Section("Developer") {
+                Toggle("Show final 1-bit raster preview", isOn: finalRasterPreviewBinding)
+
+                NavigationLink("Logs") {
+                    DiagnosticLogView(
+                        logger: .shared,
+                        bluetoothManager: bluetoothManager,
+                        preferencesStore: preferencesStore,
+                        printQueue: printQueue
+                    )
+                }
+
                 NavigationLink("BLE Diagnostics") {
                     BLEDiagnosticsView(bluetoothManager: bluetoothManager)
                 }
@@ -84,6 +96,13 @@ struct SettingsView: View {
         Binding(
             get: { Int(preferencesStore.preferences.defaultFeedAfterPrint) },
             set: { preferencesStore.preferences.defaultFeedAfterPrint = UInt16($0) }
+        )
+    }
+
+    private var finalRasterPreviewBinding: Binding<Bool> {
+        Binding(
+            get: { preferencesStore.preferences.showFinalRasterPreview },
+            set: { preferencesStore.preferences.showFinalRasterPreview = $0 }
         )
     }
 }

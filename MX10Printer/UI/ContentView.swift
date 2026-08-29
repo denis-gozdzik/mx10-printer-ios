@@ -42,9 +42,13 @@ struct ContentView: View {
             NavigationStack {
                 SettingsView(
                     bluetoothManager: bluetoothManager,
-                    preferencesStore: preferencesStore
+                    preferencesStore: preferencesStore,
+                    printQueue: printQueue
                 )
             }
+        }
+        .onAppear {
+            DiagnosticLogger.shared.log(.app, "ContentView appeared")
         }
     }
 

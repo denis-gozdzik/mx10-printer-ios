@@ -14,11 +14,13 @@ struct PrintEditorView: View {
     @State private var selectedElementID: UUID?
     @State private var photoSelection: PhotosPickerItem?
     @State private var isPreviewMode = false
-    @State private var previewImage: CGImage?
+    @State private var latestPreview: PrintPreview?
     @State private var moveStartFrames: [UUID: PrintElementFrame] = [:]
     @State private var resizeStartFrames: [UUID: PrintElementFrame] = [:]
     @State private var statusMessage: String?
+    @FocusState private var isTextInspectorFocused: Bool
 
+    private let logger = DiagnosticLogger.shared
     private let jobBuilder = PrintJobBuilder()
 
     init(
@@ -76,6 +78,13 @@ struct PrintEditorView: View {
         .onChange(of: preferencesStore.preferences) { _, _ in
             refreshPreview()
         }
+        .onChange(of: bluetoothManager.printerStateText) { _, newValue in
+            guard printQueue.isPrinting, newValue == "Disconnected" else {
+                return
+            }
+
+            printQueue.failCurrentJob(reason: "Printer disconnected")
+        }
     }
 
     private var titleEditor: some View {
@@ -87,7 +96,10 @@ struct PrintEditorView: View {
     private var editorToolbar: some View {
         HStack(spacing: 12) {
             Button {
-                selectedElementID = document.addTextElement()
+                let elementID = document.addTextElement()
+                selectedElementID = elementID
+                focusTextInspector()
+                logger.log(.editor, "text element added", metadata: ["element": elementID.uuidString])
                 saveDocument()
                 refreshPreview()
             } label: {
@@ -110,18 +122,32 @@ struct PrintEditorView: View {
             } label: {
                 Label("Print", systemImage: "printer")
             }
-            .disabled(!bluetoothManager.canSendPrintData || printQueue.isPrinting)
+            .disabled(printUnavailableReason != nil)
+
+            if printQueue.isPrinting {
+                Button(role: .destructive) {
+                    printQueue.cancelCurrentJob()
+                } label: {
+                    Label("Cancel Print", systemImage: "xmark.circle")
+                }
+            }
         }
         .buttonStyle(.bordered)
     }
 
     private var queueStatus: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Queue")
+            Text(printQueue.currentStatusText)
                 .font(.headline)
-            Text("Printing: \(printQueue.isPrinting ? "YES" : "NO")")
-            Text("Pending jobs: \(printQueue.pendingJobs.count)")
-            Text("Completed jobs: \(printQueue.completedJobs.count)")
+
+            if printQueue.isPrinting {
+                ProgressView(value: printQueue.progressFraction)
+            }
+
+            if let reason = printUnavailableReason {
+                Text(reason)
+                    .foregroundStyle(.secondary)
+            }
 
             if let failure = printQueue.failedJobs.last {
                 Text("Last failure: \(failure.message)")
@@ -140,7 +166,7 @@ struct PrintEditorView: View {
                 Color.white
 
                 if isPreviewMode {
-                    if let previewImage {
+                    if let previewImage = selectedPreviewImage {
                         Image(decorative: previewImage, scale: 1)
                             .interpolation(.none)
                             .resizable()
@@ -214,6 +240,7 @@ struct PrintEditorView: View {
         VStack(alignment: .leading, spacing: 12) {
             TextEditor(text: selectedTextBinding)
                 .frame(minHeight: 96)
+                .focused($isTextInspectorFocused)
                 .overlay {
                     RoundedRectangle(cornerRadius: 6)
                         .stroke(Color.secondary.opacity(0.35))
@@ -302,7 +329,13 @@ struct PrintEditorView: View {
                 y: CGFloat(frame.y + frame.height / 2)
             )
             .contentShape(Rectangle())
-            .onTapGesture {
+            .onTapGesture(count: 2) {
+                selectedElementID = element.id
+                if case .text = element {
+                    focusTextInspector()
+                }
+            }
+            .onTapGesture(count: 1) {
                 selectedElementID = element.id
             }
             .gesture(moveGesture(for: element.id))
@@ -508,14 +541,52 @@ struct PrintEditorView: View {
     }
 
     private func addImage(from item: PhotosPickerItem?) async {
-        guard let item,
-              let data = try? await item.loadTransferable(type: Data.self) else {
+        logger.log(.image, "PhotosPicker result", metadata: ["hasItem": item != nil])
+
+        guard let item else {
+            return
+        }
+
+        let data: Data
+        do {
+            guard let loadedData = try await item.loadTransferable(type: Data.self) else {
+                await MainActor.run {
+                    statusMessage = "Image load failed"
+                    logger.log(.error, "PhotosPicker returned no data")
+                }
+                return
+            }
+            data = loadedData
+        } catch {
+            await MainActor.run {
+                statusMessage = "Image load failed: \(error.localizedDescription)"
+                logger.log(.error, "PhotosPicker load failed", metadata: ["error": error.localizedDescription])
+            }
             return
         }
 
         await MainActor.run {
-            selectedElementID = document.addImageElement(imageData: data)
+            logger.log(.image, "PhotosPicker data loaded", metadata: ["bytes": data.count])
+            if let image = UIImage(data: data) {
+                logger.log(
+                    .image,
+                    "PhotosPicker decode success",
+                    metadata: [
+                        "sourceDimensions": "\(Int(image.size.width * image.scale))x\(Int(image.size.height * image.scale))",
+                        "orientation": "\(image.imageOrientation.rawValue)"
+                    ]
+                )
+            } else {
+                logger.log(.error, "PhotosPicker decode failed")
+                statusMessage = "Image decode failed"
+                photoSelection = nil
+                return
+            }
+
+            let elementID = document.addImageElement(imageData: data)
+            selectedElementID = elementID
             photoSelection = nil
+            logger.log(.editor, "image element added", metadata: ["element": elementID.uuidString])
             saveDocument()
             refreshPreview()
         }
@@ -588,11 +659,19 @@ struct PrintEditorView: View {
     }
 
     private func refreshPreview() {
-        let preview = jobBuilder.makePreview(
-            document: document,
-            preferences: preferencesStore.preferences
-        )
-        previewImage = preview.previewImage
+        do {
+            latestPreview = try jobBuilder.makePreview(
+                document: document,
+                preferences: preferencesStore.preferences
+            )
+            if statusMessage?.hasPrefix("Render failed") == true {
+                statusMessage = nil
+            }
+        } catch {
+            latestPreview = nil
+            statusMessage = "Render failed: \(error.localizedDescription)"
+            logger.log(.error, "preview failed", metadata: ["error": error.localizedDescription])
+        }
     }
 
     private func saveDocument() {
@@ -600,13 +679,80 @@ struct PrintEditorView: View {
     }
 
     private func printCurrentDocument() {
-        let job = jobBuilder.makeJob(
-            document: document,
-            preferences: preferencesStore.preferences
+        logger.log(
+            .app,
+            "Print button tapped",
+            metadata: [
+                "document": document.id.uuidString,
+                "elements": document.firstPage.elements.count
+            ]
         )
+
+        if let reason = printUnavailableReason {
+            statusMessage = reason
+            logger.log(.editor, "print unavailable", metadata: ["reason": reason])
+            return
+        }
+
         documentStore.save(document)
-        printQueue.enqueue(job, printer: MX10Printer(bluetoothManager: bluetoothManager))
-        statusMessage = "Queued \(job.rows.count) rows"
+
+        do {
+            statusMessage = "Rendering..."
+            let preview = try jobBuilder.makePreview(
+                document: document,
+                preferences: preferencesStore.preferences
+            )
+            latestPreview = preview
+
+            let job = jobBuilder.makeJob(
+                document: document,
+                preview: preview,
+                preferences: preferencesStore.preferences
+            )
+            printQueue.enqueue(job, printer: MX10Printer(bluetoothManager: bluetoothManager))
+            statusMessage = "Queued \(job.rows.count) rows"
+        } catch {
+            statusMessage = "Render failed: \(error.localizedDescription)"
+            logger.log(.error, "print job build failed", metadata: ["error": error.localizedDescription])
+        }
+    }
+
+    private func focusTextInspector() {
+        DispatchQueue.main.async {
+            isTextInspectorFocused = true
+        }
+    }
+
+    private var selectedPreviewImage: CGImage? {
+        if preferencesStore.preferences.showFinalRasterPreview {
+            return latestPreview?.previewImage
+        }
+
+        return latestPreview?.renderedImage
+    }
+
+    private var printUnavailableReason: String? {
+        if printQueue.isPrinting {
+            return "Another print job is active"
+        }
+
+        if document.firstPage.elements.isEmpty {
+            return "Document is empty"
+        }
+
+        if !bluetoothManager.isConnected {
+            return "Printer disconnected"
+        }
+
+        if !bluetoothManager.canSendPrintData {
+            return "Printer not ready"
+        }
+
+        if latestPreview == nil {
+            return "Render failed"
+        }
+
+        return nil
     }
 }
 

@@ -7,17 +7,42 @@ struct BitmapRasterizer {
 
     var mode: DitheringMode
     var threshold: UInt8
+    var logger: DiagnosticLogger
 
-    init(mode: DitheringMode = .floydSteinberg, threshold: UInt8 = 128) {
+    init(
+        mode: DitheringMode = .floydSteinberg,
+        threshold: UInt8 = 128,
+        logger: DiagnosticLogger = .shared
+    ) {
         self.mode = mode
         self.threshold = threshold
+        self.logger = logger
     }
 
     func rasterRows(from image: CGImage) -> [Data] {
         let preparedImage = image.width == Self.targetWidth ? image : scaledToTargetWidth(image)
         let width = preparedImage.width
         let height = preparedImage.height
+        logger.log(
+            .raster,
+            "raster start",
+            metadata: [
+                "sourceDimensions": "\(image.width)x\(image.height)",
+                "renderedDimensions": "\(width)x\(height)",
+                "targetWidth": Self.targetWidth,
+                "mode": mode.rawValue,
+                "threshold": threshold
+            ]
+        )
         let grayscale = grayscalePixels(from: preparedImage)
+        logger.log(
+            .raster,
+            "grayscale",
+            metadata: [
+                "dimensions": "\(width)x\(height)",
+                "pixels": grayscale.count
+            ]
+        )
 
         let blackPixels: [Bool]
         switch mode {
@@ -29,11 +54,23 @@ struct BitmapRasterizer {
             blackPixels = ditherAtkinson(grayscale, width: width, height: height, threshold: threshold)
         }
 
-        return packRows(blackPixels, width: width, height: height)
+        let rows = packRows(blackPixels, width: width, height: height)
+        logger.log(
+            .raster,
+            "raster complete",
+            metadata: [
+                "width": width,
+                "rows": rows.count,
+                "bytesPerRow": Self.rowByteCount,
+                "mode": mode.rawValue
+            ]
+        )
+        return rows
     }
 
     static func previewImage(from rows: [Data]) -> CGImage? {
         guard !rows.isEmpty else {
+            DiagnosticLogger.shared.log(.raster, "preview unavailable", metadata: ["reason": "empty rows"])
             return nil
         }
 
@@ -58,7 +95,18 @@ struct BitmapRasterizer {
             }
         }
 
-        return makeImage(width: width, height: height, pixels: &pixels)
+        let image = makeImage(width: width, height: height, pixels: &pixels)
+        DiagnosticLogger.shared.log(
+            .raster,
+            "1-bit preview image",
+            metadata: [
+                "width": width,
+                "height": height,
+                "rows": rows.count,
+                "bytesPerRow": Self.rowByteCount
+            ]
+        )
+        return image
     }
 
     private func scaledToTargetWidth(_ image: CGImage) -> CGImage {
@@ -80,9 +128,25 @@ struct BitmapRasterizer {
             )
             return true
         }) == true else {
+            logger.log(
+                .error,
+                "scale to target width failed",
+                metadata: [
+                    "sourceDimensions": "\(image.width)x\(image.height)",
+                    "targetWidth": Self.targetWidth
+                ]
+            )
             return image
         }
 
+        logger.log(
+            .raster,
+            "scale to target width",
+            metadata: [
+                "sourceDimensions": "\(image.width)x\(image.height)",
+                "scaledDimensions": "\(Self.targetWidth)x\(targetHeight)"
+            ]
+        )
         return Self.makeImage(width: Self.targetWidth, height: targetHeight, pixels: &pixels) ?? image
     }
 
@@ -100,6 +164,11 @@ struct BitmapRasterizer {
             )
             return true
         }) == true else {
+            logger.log(
+                .error,
+                "grayscale context failed",
+                metadata: ["dimensions": "\(width)x\(height)"]
+            )
             return [Double](repeating: 255, count: width * height)
         }
 
