@@ -3,8 +3,8 @@ import XCTest
 
 @MainActor
 final class PrintQueueTests: XCTestCase {
-    func testPrintQueueProcessesJobsInEnqueueOrder() async throws {
-        let queue = PrintQueue()
+    func testPrintQueueProcessesJobsInEnqueueOrderAndClearsActiveState() async throws {
+        let queue = makeQueue()
         let printer = RecordingPrinter()
         let jobs = [
             makeJob(byte: 0x01),
@@ -17,14 +17,130 @@ final class PrintQueueTests: XCTestCase {
         }
 
         try await waitUntil {
-            printer.printedJobIDs.count == jobs.count
+            queue.completedJobs.count == jobs.count
         }
 
         XCTAssertEqual(printer.printedJobIDs, jobs.map(\.id))
         XCTAssertEqual(printer.maxActivePrints, 1)
-        XCTAssertEqual(queue.completedJobs, jobs)
+        XCTAssertEqual(queue.completedJobs.map(\.id), jobs.map(\.id))
+        XCTAssertTrue(queue.completedJobs.allSatisfy { $0.lifecycle == .completed })
         XCTAssertTrue(queue.pendingJobs.isEmpty)
+        XCTAssertNil(queue.currentJob)
         XCTAssertFalse(queue.isPrinting)
+    }
+
+    func testPrintQueueClearsActiveStateAfterTransportError() async throws {
+        let queue = makeQueue()
+        let printer = FailingPrinter(error: TestPrintError.transport)
+        let job = makeJob(byte: 0x10)
+
+        queue.enqueue(job, printer: printer)
+
+        try await waitUntil {
+            queue.failedJobs.count == 1
+        }
+
+        XCTAssertEqual(queue.failedJobs.first?.job.id, job.id)
+        XCTAssertTrue(queue.pendingJobs.isEmpty)
+        XCTAssertNil(queue.currentJob)
+        XCTAssertFalse(queue.isPrinting)
+    }
+
+    func testPrintQueueClearsActiveStateAfterTimeout() async throws {
+        let queue = makeQueue(
+            configuration: PrintQueueConfiguration(
+                inactivityTimeout: 0.05,
+                timeoutCheckIntervalNanoseconds: 5_000_000
+            )
+        )
+        let printer = HangingPrinter()
+        let job = makeJob(byte: 0x20)
+
+        queue.enqueue(job, printer: printer)
+
+        try await waitUntil {
+            queue.failedJobs.count == 1
+        }
+
+        XCTAssertTrue(printer.cancelCalled)
+        XCTAssertEqual(queue.failedJobs.first?.job.id, job.id)
+        XCTAssertTrue(queue.failedJobs.first?.message.contains("PRINT_TIMEOUT") == true)
+        XCTAssertNil(queue.currentJob)
+        XCTAssertFalse(queue.isPrinting)
+    }
+
+    func testPrintQueueClearsActiveStateAfterDisconnectError() async throws {
+        let queue = makeQueue()
+        let printer = FailingPrinter(error: PrintTransportError.disconnected)
+        let job = makeJob(byte: 0x30)
+
+        queue.enqueue(job, printer: printer)
+
+        try await waitUntil {
+            queue.failedJobs.count == 1
+        }
+
+        XCTAssertEqual(queue.failedJobs.first?.job.id, job.id)
+        XCTAssertEqual(queue.failedJobs.first?.job.lifecycle, .failed)
+        XCTAssertNil(queue.currentJob)
+        XCTAssertFalse(queue.isPrinting)
+    }
+
+    func testPrintQueueCancelsCurrentJobAndBecomesUsable() async throws {
+        let queue = makeQueue()
+        let printer = CancellablePrinter()
+        let job = makeJob(byte: 0x40)
+
+        queue.enqueue(job, printer: printer)
+
+        try await waitUntil {
+            queue.currentJob?.id == job.id
+        }
+
+        queue.cancelCurrentJob()
+
+        try await waitUntil {
+            queue.cancelledJobs.count == 1
+        }
+
+        XCTAssertTrue(printer.cancelCalled)
+        XCTAssertEqual(queue.cancelledJobs.first?.id, job.id)
+        XCTAssertNil(queue.currentJob)
+        XCTAssertFalse(queue.isPrinting)
+    }
+
+    func testExternalDisconnectRecoveryFailsCurrentJob() async throws {
+        let queue = makeQueue()
+        let printer = HangingPrinter()
+        let job = makeJob(byte: 0x50)
+
+        queue.enqueue(job, printer: printer)
+
+        try await waitUntil {
+            queue.currentJob?.id == job.id
+        }
+
+        queue.failCurrentJob(reason: "Printer disconnected")
+
+        XCTAssertTrue(printer.cancelCalled)
+        XCTAssertEqual(queue.failedJobs.first?.job.id, job.id)
+        XCTAssertNil(queue.currentJob)
+        XCTAssertFalse(queue.isPrinting)
+    }
+
+    private func makeQueue(
+        configuration: PrintQueueConfiguration = PrintQueueConfiguration()
+    ) -> PrintQueue {
+        PrintQueue(configuration: configuration, logger: makeLogger())
+    }
+
+    private func makeLogger() -> DiagnosticLogger {
+        DiagnosticLogger(
+            maxEntries: 100,
+            storageURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension("txt")
+        )
     }
 
     private func makeJob(byte: UInt8) -> PrintJob {
@@ -46,18 +162,92 @@ final class PrintQueueTests: XCTestCase {
     }
 }
 
+private enum TestPrintError: LocalizedError {
+    case transport
+
+    var errorDescription: String? {
+        "Transport failed"
+    }
+}
+
 private final class RecordingPrinter: PrintJobPrinting {
     private(set) var printedJobIDs: [UUID] = []
     private(set) var maxActivePrints = 0
     private var activePrints = 0
 
-    func print(job: PrintJob) async throws {
+    func print(
+        job: PrintJob,
+        progress: @escaping (PrintJobProgress) -> Void
+    ) async throws {
         activePrints += 1
         maxActivePrints = max(maxActivePrints, activePrints)
         printedJobIDs.append(job.id)
+        defer { activePrints -= 1 }
+
+        progress(
+            PrintJobProgress(
+                jobID: job.id,
+                currentRow: job.rowCount,
+                totalRows: job.rowCount,
+                bytesSent: job.rows.reduce(0) { $0 + $1.count },
+                timestamp: Date(),
+                activity: .rowSent
+            )
+        )
 
         try await Task.sleep(nanoseconds: 1_000_000)
+    }
+}
 
-        activePrints -= 1
+private final class FailingPrinter: PrintJobPrinting {
+    private let error: Error
+
+    init(error: Error) {
+        self.error = error
+    }
+
+    func print(
+        job: PrintJob,
+        progress: @escaping (PrintJobProgress) -> Void
+    ) async throws {
+        throw error
+    }
+}
+
+private final class HangingPrinter: PrintJobPrinting {
+    private(set) var cancelCalled = false
+
+    var diagnosticStateDescription: String {
+        "mock hanging"
+    }
+
+    func print(
+        job: PrintJob,
+        progress: @escaping (PrintJobProgress) -> Void
+    ) async throws {
+        try await Task.sleep(nanoseconds: 10_000_000_000)
+    }
+
+    func cancelCurrentPrint() {
+        cancelCalled = true
+    }
+}
+
+private final class CancellablePrinter: PrintJobPrinting {
+    private(set) var cancelCalled = false
+
+    func print(
+        job: PrintJob,
+        progress: @escaping (PrintJobProgress) -> Void
+    ) async throws {
+        while !cancelCalled {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+
+        throw PrintTransportError.cancelled
+    }
+
+    func cancelCurrentPrint() {
+        cancelCalled = true
     }
 }

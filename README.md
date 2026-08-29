@@ -103,6 +103,20 @@ Distribution to `Home` is handled by App Store Connect with `Enable automatic di
 
 The TestFlight workflow must remain internal-only: no external testing, no public links, no Beta App Review submission, and no App Store Review submission.
 
+## Printing diagnostics
+
+The app includes a bounded in-app diagnostic log under Settings -> Developer -> Logs. Exported logs are plain UTF-8 text and include app/build/device context, BLE state, printer state, MX10 UUIDs, dither settings, threshold, and the active print job state.
+
+Printing is intentionally observable before new print features are added:
+
+- BLE lifecycle events are logged, including scan, discovery, connect, service/characteristic discovery, notifications, write attempts, backpressure, and `peripheralIsReady`.
+- Print jobs use explicit lifecycle states: `queued`, `rendering`, `ready`, `sending`, `completed`, `failed`, and `cancelled`.
+- `PrintQueue` uses a 30 second inactivity timeout in the debug build path and must return to an idle/usable state after success, failure, disconnect, timeout, or cancellation.
+- Raster validation requires width `384` and `48` bytes per row. Invalid image decode or invalid raster output is shown to the user and is not silently enqueued.
+- The print preview and print job are built from the same render/raster path. A Developer option can show the final 1-bit raster preview exactly as it will be sent.
+
+Compatible-printer protocol notes mention possible commands `A8`, `BB`, `A4`, `A6`, `AF`, `BE`, `BD`, and `BF`, but these remain unverified on this MX10 and are not sent by default. Findings are documented in `AGENTS.md` and guarded by the `MX10PrintConfiguration` / `MX10PrinterProfile` abstraction.
+
 ## iOS build environment
 
 The app targets iOS 17.0 and is intended to be built on macOS runners. Local Windows development is for editing, testing logic, and preparing the project; the build itself is executed in CI.

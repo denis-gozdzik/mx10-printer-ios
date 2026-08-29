@@ -2,13 +2,24 @@ import Foundation
 
 enum MX10ProtocolError: LocalizedError {
     case invalidPrintRowLength(Int)
+    case invalidFrame
 
     var errorDescription: String? {
         switch self {
         case .invalidPrintRowLength(let count):
             return "Expected a 48-byte row for MX10 printing but received \(count) bytes."
+        case .invalidFrame:
+            return "Invalid MX10 protocol frame."
         }
     }
+}
+
+struct MX10ProtocolFrame: Equatable {
+    let command: UInt8
+    let mode: UInt8
+    let payload: Data
+    let crc: UInt8
+    let isCRCValid: Bool
 }
 
 enum MX10Protocol {
@@ -53,5 +64,33 @@ enum MX10Protocol {
         }
 
         return frame(command: 0xA2, payload: row)
+    }
+
+    static func parseFrame(_ data: Data) -> MX10ProtocolFrame? {
+        guard data.count >= 8,
+              data[0] == framePrefix[0],
+              data[1] == framePrefix[1],
+              data[data.count - 1] == terminator else {
+            return nil
+        }
+
+        let payloadLength = Int(data[4]) | (Int(data[5]) << 8)
+        let expectedCount = 2 + 1 + 1 + 2 + payloadLength + 1 + 1
+        guard data.count == expectedCount else {
+            return nil
+        }
+
+        let payloadStartIndex = 6
+        let payloadEndIndex = payloadStartIndex + payloadLength
+        let payload = Data(data[payloadStartIndex..<payloadEndIndex])
+        let crc = data[payloadEndIndex]
+
+        return MX10ProtocolFrame(
+            command: data[2],
+            mode: data[3],
+            payload: payload,
+            crc: crc,
+            isCRCValid: CRC8.crc8(for: payload) == crc
+        )
     }
 }

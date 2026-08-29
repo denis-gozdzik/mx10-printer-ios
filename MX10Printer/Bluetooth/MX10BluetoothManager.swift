@@ -33,11 +33,16 @@ private struct BLEAdvertisementRecord {
     let isConnectable: Bool?
 }
 
-final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripheralDelegate {
-    private static let advertisedServiceUUID = CBUUID(string: "AF30")
-    private static let mx10ServiceUUID = CBUUID(string: "AE30")
-    private static let writeCharacteristicUUID = CBUUID(string: "AE01")
-    private static let notifyCharacteristicUUID = CBUUID(string: "AE02")
+final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripheralDelegate, PrintFrameTransport {
+    static let advertisedServiceUUIDString = "AF30"
+    static let protocolServiceUUIDString = "AE30"
+    static let writeCharacteristicUUIDString = "AE01"
+    static let notifyCharacteristicUUIDString = "AE02"
+
+    private static let advertisedServiceUUID = CBUUID(string: advertisedServiceUUIDString)
+    private static let mx10ServiceUUID = CBUUID(string: protocolServiceUUIDString)
+    private static let writeCharacteristicUUID = CBUUID(string: writeCharacteristicUUIDString)
+    private static let notifyCharacteristicUUID = CBUUID(string: notifyCharacteristicUUIDString)
     private static let lastConnectedPrinterKey = "lastConnectedMX10PeripheralIdentifier"
 
     @Published var bluetoothStateText: String = "Unknown"
@@ -53,7 +58,12 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
     @Published var ae01Found: Bool = false
     @Published var ae02Found: Bool = false
     @Published var ae02NotificationsEnabled: Bool = false
+    @Published var maxWriteWithoutResponseLength: Int?
+    @Published var transportState: PrinterTransportState = .idle
 
+    var onTransportActivity: ((PrintJobProgressActivity) -> Void)?
+
+    private let logger: DiagnosticLogger
     private var centralManager: CBCentralManager!
     private var advertisementRecords: [BLEAdvertisementRecord] = []
     private var devicesByIdentifier: [UUID: BLEDiscoveredDevice] = [:]
@@ -62,10 +72,15 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
     private var writeCharacteristic: CBCharacteristic?
     private var notifyCharacteristic: CBCharacteristic?
     private var didAttemptAutoReconnect = false
+    private var activeTransportJobID: UUID?
+    private var readinessContinuation: CheckedContinuation<Void, Error>?
+    private var transportCancelled = false
 
-    override init() {
+    init(logger: DiagnosticLogger = .shared) {
+        self.logger = logger
         super.init()
         centralManager = CBCentralManager(delegate: self, queue: nil)
+        logger.log(.app, "Bluetooth manager initialized")
     }
 
     var isConnected: Bool {
@@ -74,6 +89,10 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
 
     var canSendPrintData: Bool {
         isConnected && writeCharacteristic != nil
+    }
+
+    var isReadyForWriteWithoutResponse: Bool {
+        selectedPeripheral?.canSendWriteWithoutResponse ?? false
     }
 
     var uniqueDeviceCount: Int {
@@ -98,12 +117,25 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
         guard centralManager.state == .poweredOn else {
             isScanning = false
             printerStateText = "Bluetooth unavailable"
+            logger.log(
+                .ble,
+                "scan start blocked",
+                metadata: ["centralState": bluetoothStateText]
+            )
             return
         }
 
         totalDiscoveries = 0
         printerStateText = "Scanning"
         isScanning = true
+        logger.log(
+            .ble,
+            "scan start",
+            metadata: [
+                "withServices": "nil",
+                "allowDuplicates": true
+            ]
+        )
         centralManager.scanForPeripherals(
             withServices: nil,
             options: [
@@ -132,48 +164,65 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
     }
 
     func connect(_ peripheral: CBPeripheral) {
-        centralManager.stopScan()
-        isScanning = false
+        stopScan(reason: "connect requested")
         selectedPeripheral = peripheral
         connectedPeripheralIdentifier = peripheral.identifier
         connectedPeripheralName = displayName(for: peripheral)
         resetConnectionDiagnostics(clearConnectedPeripheral: false)
         printerStateText = "Connecting"
+        logger.log(
+            .ble,
+            "connect requested",
+            metadata: [
+                "name": connectedPeripheralName ?? "Unknown",
+                "identifier": peripheral.identifier.uuidString
+            ]
+        )
         centralManager.connect(peripheral, options: nil)
     }
 
     func disconnect() {
         guard let peripheral = selectedPeripheral else {
             printerStateText = "Disconnected"
+            logger.log(.ble, "disconnect requested without selected peripheral")
             return
         }
 
+        logger.log(
+            .ble,
+            "disconnect requested",
+            metadata: ["identifier": peripheral.identifier.uuidString]
+        )
         centralManager.cancelPeripheralConnection(peripheral)
     }
 
     func send(data: Data) {
-        guard isConnected else {
-            printerStateText = "Disconnected"
-            return
-        }
-
-        guard let characteristic = writeCharacteristic else {
-            printerStateText = "AE01 missing"
-            return
-        }
-
-        guard let peripheral = selectedPeripheral else {
-            printerStateText = "MX10 unavailable"
-            return
-        }
-
-        if peripheral.state == .connected {
-            peripheral.writeValue(data, for: characteristic, type: .withoutResponse)
-            printerStateText = "Connected"
+        Task { [weak self] in
+            do {
+                try await self?.sendFrame(
+                    data,
+                    context: .control(
+                        command: data.count > 2 ? data[2] : 0,
+                        kind: .control
+                    )
+                )
+            } catch {
+                self?.logger.log(
+                    .error,
+                    "send(data:) failed",
+                    metadata: ["error": error.localizedDescription]
+                )
+            }
         }
     }
 
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        logger.log(
+            .ble,
+            "centralManagerDidUpdateState",
+            metadata: ["state": Self.centralStateText(central.state)]
+        )
+
         switch central.state {
         case .poweredOn:
             bluetoothStateText = "On"
@@ -182,15 +231,19 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
             bluetoothStateText = "Off"
             isScanning = false
             printerStateText = "Bluetooth off"
+            failActiveTransport(reason: "Bluetooth powered off")
         case .resetting:
             bluetoothStateText = "Resetting"
             isScanning = false
+            failActiveTransport(reason: "Bluetooth resetting")
         case .unauthorized:
             bluetoothStateText = "Unauthorized"
             isScanning = false
+            failActiveTransport(reason: "Bluetooth unauthorized")
         case .unsupported:
             bluetoothStateText = "Unsupported"
             isScanning = false
+            failActiveTransport(reason: "Bluetooth unsupported")
         case .unknown:
             bluetoothStateText = "Unknown"
             isScanning = false
@@ -221,6 +274,23 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
         totalDiscoveries = advertisementRecords.count
         peripheralsByIdentifier[peripheral.identifier] = peripheral
 
+        logger.log(
+            .ble,
+            "didDiscover",
+            metadata: [
+                "sequence": record.sequence,
+                "peripheralName": record.peripheralName ?? "nil",
+                "localName": record.localName ?? "nil",
+                "identifier": record.peripheralIdentifier.uuidString,
+                "rssi": record.rssi,
+                "serviceUUIDs": record.serviceUUIDs.joined(separator: ","),
+                "overflowServiceUUIDs": record.overflowServiceUUIDs.joined(separator: ","),
+                "solicitedServiceUUIDs": record.solicitedServiceUUIDs.joined(separator: ","),
+                "manufacturerData": record.manufacturerDataHex ?? "nil",
+                "connectable": record.isConnectable.map { String($0) } ?? "unknown"
+            ]
+        )
+
         let isCandidate = Self.isMX10Candidate(record)
         let discoveryCount = (devicesByIdentifier[peripheral.identifier]?.discoveryCount ?? 0) + 1
         let device = BLEDiscoveredDevice(
@@ -249,6 +319,15 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
 
         if isCandidate {
             printerStateText = "MX10 candidate discovered"
+            logger.log(
+                .ble,
+                "MX10 candidate marked",
+                metadata: [
+                    "identifier": peripheral.identifier.uuidString,
+                    "name": device.displayName,
+                    "services": device.serviceUUIDs.joined(separator: ",")
+                ]
+            )
         }
     }
 
@@ -259,22 +338,47 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
         resetConnectionDiagnostics(clearConnectedPeripheral: false)
         printerStateText = "Connected"
         peripheral.delegate = self
+        maxWriteWithoutResponseLength = peripheral.maximumWriteValueLength(for: .withoutResponse)
+        logger.log(
+            .ble,
+            "didConnect",
+            metadata: [
+                "name": connectedPeripheralName ?? "Unknown",
+                "identifier": peripheral.identifier.uuidString,
+                "maximumWriteValueLengthWithoutResponse": maxWriteWithoutResponseLength ?? -1
+            ]
+        )
         peripheral.discoverServices([Self.mx10ServiceUUID])
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         printerStateText = "Connection failed"
-        if let error {
-            print("Failed to connect: \(error.localizedDescription)")
-        }
+        logger.log(
+            .error,
+            "didFailToConnect",
+            metadata: [
+                "identifier": peripheral.identifier.uuidString,
+                "error": error?.localizedDescription ?? "unknown"
+            ]
+        )
 
         scanForMX10()
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        logger.log(
+            error == nil ? .ble : .error,
+            "didDisconnectPeripheral",
+            metadata: [
+                "identifier": peripheral.identifier.uuidString,
+                "error": error?.localizedDescription ?? "none"
+            ]
+        )
+        failActiveTransport(reason: error?.localizedDescription ?? "Peripheral disconnected")
         selectedPeripheral = nil
         writeCharacteristic = nil
         notifyCharacteristic = nil
+        maxWriteWithoutResponseLength = nil
         connectedPeripheralName = nil
         connectedPeripheralIdentifier = nil
         resetConnectionDiagnostics(clearConnectedPeripheral: true)
@@ -284,15 +388,29 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         guard error == nil else {
             printerStateText = "Service discovery failed"
+            logger.log(
+                .error,
+                "service discovery failed",
+                metadata: ["error": error?.localizedDescription ?? "unknown"]
+            )
             return
         }
 
         let services = peripheral.services ?? []
         servicesDiscovered = services.map { $0.uuid.uuidString }
         ae30Found = services.contains { $0.uuid == Self.mx10ServiceUUID }
+        logger.log(
+            .ble,
+            "service discovery",
+            metadata: [
+                "services": servicesDiscovered.joined(separator: ","),
+                "ae30Found": ae30Found
+            ]
+        )
 
         guard ae30Found else {
             printerStateText = "AE30 service missing"
+            logger.log(.error, "AE30 service missing")
             return
         }
 
@@ -306,6 +424,14 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         guard error == nil else {
             printerStateText = "Characteristic discovery failed"
+            logger.log(
+                .error,
+                "characteristic discovery failed",
+                metadata: [
+                    "service": service.uuid.uuidString,
+                    "error": error?.localizedDescription ?? "unknown"
+                ]
+            )
             return
         }
 
@@ -316,15 +442,25 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
 
         let discovered = characteristics.map { $0.uuid.uuidString }
         characteristicsDiscovered = Array(Set(characteristicsDiscovered + discovered)).sorted()
+        logger.log(
+            .ble,
+            "characteristic discovery",
+            metadata: [
+                "service": service.uuid.uuidString,
+                "characteristics": discovered.joined(separator: ",")
+            ]
+        )
 
         for characteristic in characteristics {
             switch characteristic.uuid {
             case Self.writeCharacteristicUUID:
                 ae01Found = true
                 writeCharacteristic = characteristic
+                logger.log(.ble, "AE01 write characteristic found")
             case Self.notifyCharacteristicUUID:
                 ae02Found = true
                 notifyCharacteristic = characteristic
+                logger.log(.ble, "AE02 notify characteristic found")
                 peripheral.setNotifyValue(true, for: characteristic)
             default:
                 break
@@ -347,28 +483,205 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
             }
 
             printerStateText = "Notify setup failed"
+            logger.log(
+                .error,
+                "notification state update failed",
+                metadata: [
+                    "characteristic": characteristic.uuid.uuidString,
+                    "error": error?.localizedDescription ?? "unknown"
+                ]
+            )
             return
         }
 
         if characteristic.uuid == Self.notifyCharacteristicUUID {
             ae02NotificationsEnabled = characteristic.isNotifying
             printerStateText = characteristic.isNotifying ? "Connected" : "AE02 notify disabled"
+            logger.log(
+                .ble,
+                "notification state changed",
+                metadata: [
+                    "characteristic": characteristic.uuid.uuidString,
+                    "isNotifying": characteristic.isNotifying
+                ]
+            )
         }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         guard error == nil else {
-            print("Notification read failed: \(error?.localizedDescription ?? "unknown")")
+            logger.log(
+                .error,
+                "notification read failed",
+                metadata: [
+                    "characteristic": characteristic.uuid.uuidString,
+                    "error": error?.localizedDescription ?? "unknown"
+                ]
+            )
             return
         }
 
         if let value = characteristic.value {
-            print("Received MX10 notification: \(value.map { String(format: "%02X", $0) }.joined(separator: " "))")
+            if let frame = MX10Protocol.parseFrame(value) {
+                logger.log(
+                    .printer,
+                    "AE02 notification parsed",
+                    metadata: [
+                        "characteristic": characteristic.uuid.uuidString,
+                        "bytes": value.count,
+                        "command": String(format: "0x%02X", frame.command),
+                        "mode": String(format: "0x%02X", frame.mode),
+                        "payloadBytes": frame.payload.count,
+                        "payloadHex": frame.payload.diagnosticHexString,
+                        "crc": String(format: "0x%02X", frame.crc),
+                        "crcValid": frame.isCRCValid,
+                        "hex": value.diagnosticHexString
+                    ]
+                )
+            } else {
+                logger.log(
+                    .printer,
+                    "AE02 notification unknown",
+                    metadata: [
+                        "characteristic": characteristic.uuid.uuidString,
+                        "bytes": value.count,
+                        "hex": value.diagnosticHexString
+                    ]
+                )
+            }
+            onTransportActivity?(.notificationReceived)
         }
     }
 
     func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
         printerStateText = "Connected"
+        logger.log(
+            .ble,
+            "peripheralIsReady(toSendWriteWithoutResponse:)",
+            metadata: [
+                "identifier": peripheral.identifier.uuidString,
+                "canSendWriteWithoutResponse": peripheral.canSendWriteWithoutResponse
+            ]
+        )
+        transportState = activeTransportJobID == nil ? .idle : .sending
+        onTransportActivity?(.peripheralReady)
+        resumeReadinessContinuation(with: .success(()))
+    }
+
+    func beginPrintTransport(
+        jobID: UUID,
+        totalRows: Int,
+        configuration: PrinterTransportConfiguration
+    ) {
+        activeTransportJobID = jobID
+        transportCancelled = false
+        transportState = .preparing
+        logger.log(
+            .queue,
+            "transport preparing",
+            metadata: [
+                "job": jobID.uuidString,
+                "rows": totalRows,
+                "maxWriteWithoutResponse": maxWriteWithoutResponseLength ?? -1,
+                "interPacketDelayNanoseconds": configuration.interPacketDelayNanoseconds
+            ]
+        )
+    }
+
+    func sendFrame(_ frame: Data, context: PrintPacketContext) async throws {
+        guard !transportCancelled else {
+            throw PrintTransportError.cancelled
+        }
+
+        guard let peripheral = selectedPeripheral else {
+            transportState = .failed
+            throw PrintTransportError.peripheralUnavailable
+        }
+
+        guard peripheral.state == .connected else {
+            transportState = .failed
+            throw PrintTransportError.disconnected
+        }
+
+        guard let characteristic = writeCharacteristic else {
+            transportState = .failed
+            throw PrintTransportError.writeCharacteristicMissing
+        }
+
+        if let maximum = maxWriteWithoutResponseLength, frame.count > maximum {
+            transportState = .failed
+            logger.log(
+                .error,
+                "packet exceeds maximumWriteValueLength",
+                metadata: packetMetadata(frame: frame, context: context).merging([
+                    "maximumWriteWithoutResponse": "\(maximum)",
+                    "hex": frame.diagnosticHexString
+                ]) { current, _ in current }
+            )
+            throw PrintTransportError.packetExceedsMaximumWriteLength(
+                packetSize: frame.count,
+                maximum: maximum
+            )
+        }
+
+        while !peripheral.canSendWriteWithoutResponse {
+            guard !transportCancelled else {
+                throw PrintTransportError.cancelled
+            }
+
+            transportState = .waitingForPeripheralReady
+            logger.log(
+                .ble,
+                "backpressure",
+                metadata: packetMetadata(frame: frame, context: context)
+            )
+            try await waitForPeripheralReady()
+        }
+
+        guard !transportCancelled else {
+            throw PrintTransportError.cancelled
+        }
+
+        transportState = .sending
+        logger.log(
+            context.kind == .bitmapRow ? .protocolLog : .ble,
+            "write attempt",
+            metadata: packetMetadata(frame: frame, context: context)
+        )
+        peripheral.writeValue(frame, for: characteristic, type: .withoutResponse)
+        printerStateText = "Connected"
+    }
+
+    func completePrintTransport(jobID: UUID) {
+        guard activeTransportJobID == jobID else {
+            return
+        }
+
+        transportState = .completed
+        activeTransportJobID = nil
+        transportCancelled = false
+        resumeReadinessContinuation(with: .success(()))
+        logger.log(.queue, "transport completed", metadata: ["job": jobID.uuidString])
+    }
+
+    func failPrintTransport(jobID: UUID?, reason: String) {
+        if let jobID, activeTransportJobID != jobID {
+            return
+        }
+
+        failActiveTransport(reason: reason)
+    }
+
+    func cancelActiveTransport() {
+        transportCancelled = true
+        transportState = .cancelled
+        logger.log(
+            .queue,
+            "transport cancelled",
+            metadata: ["job": activeTransportJobID?.uuidString ?? "none"]
+        )
+        activeTransportJobID = nil
+        resumeReadinessContinuation(with: .failure(PrintTransportError.cancelled))
     }
 
     private func resetConnectionDiagnostics(clearConnectedPeripheral: Bool) {
@@ -380,6 +693,7 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
         ae01Found = false
         ae02Found = false
         ae02NotificationsEnabled = false
+        maxWriteWithoutResponseLength = nil
 
         if clearConnectedPeripheral {
             connectedPeripheralName = nil
@@ -413,6 +727,11 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
         connectedPeripheralName = peripheral.name ?? "Last MX10"
         resetConnectionDiagnostics(clearConnectedPeripheral: false)
         printerStateText = "Reconnecting"
+        logger.log(
+            .ble,
+            "reconnect requested",
+            metadata: ["identifier": peripheral.identifier.uuidString]
+        )
         centralManager.connect(peripheral, options: nil)
     }
 
@@ -443,7 +762,7 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
             return nil
         }
 
-        return data.map { String(format: "%02X", $0) }.joined(separator: " ")
+        return data.diagnosticHexString
     }
 
     private static func boolValue(from advertisementValue: Any?) -> Bool? {
@@ -456,5 +775,114 @@ final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDe
         }
 
         return nil
+    }
+
+    private func stopScan(reason: String) {
+        if isScanning {
+            logger.log(.ble, "scan stop", metadata: ["reason": reason])
+        }
+
+        centralManager.stopScan()
+        isScanning = false
+    }
+
+    private func waitForPeripheralReady() async throws {
+        if selectedPeripheral?.canSendWriteWithoutResponse == true {
+            return
+        }
+
+        guard readinessContinuation == nil else {
+            throw PrintTransportError.concurrentPeripheralReadyWait
+        }
+
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                readinessContinuation = continuation
+            }
+        } onCancel: { [weak self] in
+            Task { @MainActor in
+                self?.cancelActiveTransport()
+            }
+        }
+    }
+
+    private func resumeReadinessContinuation(with result: Result<Void, Error>) {
+        guard let continuation = readinessContinuation else {
+            return
+        }
+
+        readinessContinuation = nil
+
+        switch result {
+        case .success:
+            continuation.resume()
+        case .failure(let error):
+            continuation.resume(throwing: error)
+        }
+    }
+
+    private func failActiveTransport(reason: String) {
+        guard activeTransportJobID != nil || readinessContinuation != nil else {
+            return
+        }
+
+        transportState = .failed
+        logger.log(
+            .error,
+            "transport failed",
+            metadata: [
+                "job": activeTransportJobID?.uuidString ?? "none",
+                "reason": reason
+            ]
+        )
+        activeTransportJobID = nil
+        transportCancelled = false
+        resumeReadinessContinuation(with: .failure(PrintTransportError.disconnected))
+    }
+
+    private func packetMetadata(frame: Data, context: PrintPacketContext) -> [String: String] {
+        var metadata: [String: String] = [
+            "packetBytes": "\(frame.count)",
+            "writeType": "withoutResponse",
+            "canSendWriteWithoutResponse": "\(selectedPeripheral?.canSendWriteWithoutResponse ?? false)",
+            "transportState": transportState.rawValue,
+            "command": String(format: "0x%02X", context.command),
+            "kind": context.kind.rawValue,
+            "crc": frame.count >= 2 ? String(format: "0x%02X", frame[frame.count - 2]) : "n/a"
+        ]
+
+        if let jobID = context.jobID {
+            metadata["job"] = jobID.uuidString
+        }
+
+        if let rowIndex = context.rowIndex,
+           let totalRows = context.totalRows {
+            metadata["row"] = "\(rowIndex + 1)/\(totalRows)"
+        }
+
+        if context.shouldLogFullHex {
+            metadata["hex"] = frame.diagnosticHexString
+        }
+
+        return metadata
+    }
+
+    private static func centralStateText(_ state: CBManagerState) -> String {
+        switch state {
+        case .unknown:
+            return "unknown"
+        case .resetting:
+            return "resetting"
+        case .unsupported:
+            return "unsupported"
+        case .unauthorized:
+            return "unauthorized"
+        case .poweredOff:
+            return "poweredOff"
+        case .poweredOn:
+            return "poweredOn"
+        @unknown default:
+            return "unavailable"
+        }
     }
 }
