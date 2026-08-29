@@ -37,4 +37,22 @@ final class MX10ProtocolTests: XCTestCase {
 
         XCTAssertThrowsError(try MX10Protocol.printRow(row))
     }
+
+    func testParseStatusNotificationFrame() {
+        let frame = MX10Protocol.parseFrame(
+            Data([0x51, 0x78, 0xA3, 0x01, 0x03, 0x00, 0x00, 0x00, 0xB6, 0x0B, 0xFF])
+        )
+
+        XCTAssertEqual(frame?.command, 0xA3)
+        XCTAssertEqual(frame?.mode, 0x01)
+        XCTAssertEqual(frame?.payload, Data([0x00, 0x00, 0xB6]))
+        XCTAssertEqual(frame?.crc, 0x0B)
+        XCTAssertEqual(frame?.isCRCValid, true)
+    }
+
+    func testParseRejectsMalformedFrame() {
+        let frame = MX10Protocol.parseFrame(Data([0x51, 0x78, 0xA3, 0x01, 0xFF]))
+
+        XCTAssertNil(frame)
+    }
 }
