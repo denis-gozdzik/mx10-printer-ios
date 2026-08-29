@@ -97,8 +97,6 @@ jobs:
           udid="$(xcrun simctl create MX10PrinterTests "$device_type" "$runtime")"
           echo "udid=$udid" >> "$GITHUB_OUTPUT"
           echo "Using simulator: $device_name ($udid) on $runtime"
-          xcrun simctl boot "$udid" || true
-          xcrun simctl bootstatus "$udid" -b
 
       - name: Run unit tests
         run: |
