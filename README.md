@@ -95,6 +95,14 @@ The repository includes a GitHub Actions workflow in `.github/workflows/ios-buil
 
 This is the validation environment before TestFlight deployment.
 
+## TestFlight internal distribution
+
+Internal TestFlight distribution uses the App Store Connect internal testing group named `Home`.
+
+Distribution to `Home` is handled by App Store Connect with `Enable automatic distribution` on that internal group. The CI pipeline uploads builds and waits for App Store Connect processing to finish; it does not assign internal groups through Fastlane because App Store Connect rejects duplicate internal build assignment through the Fastlane/pilot group API.
+
+The TestFlight workflow must remain internal-only: no external testing, no public links, no Beta App Review submission, and no App Store Review submission.
+
 ## iOS build environment
 
 The app targets iOS 17.0 and is intended to be built on macOS runners. Local Windows development is for editing, testing logic, and preparing the project; the build itself is executed in CI.
