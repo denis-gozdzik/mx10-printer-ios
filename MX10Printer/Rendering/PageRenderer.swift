@@ -70,6 +70,8 @@ struct PageRenderer {
             render(textElement: textElement, in: context)
         case .image(let imageElement):
             render(imageElement: imageElement, in: context)
+        case .qr(let qrElement):
+            render(qrElement: qrElement, in: context)
         }
     }
 
@@ -252,6 +254,60 @@ struct PageRenderer {
             metadata: ["dimensions": "\(cgImage.width)x\(cgImage.height)"]
         )
         return UIImage(cgImage: cgImage, scale: image.scale, orientation: image.imageOrientation)
+    }
+
+    private func render(qrElement: QRCodeElement, in context: CGContext) {
+        guard let qrImage = QRCodeRenderer.makeImage(from: qrElement) else {
+            logger.log(
+                .error,
+                "render QR skipped",
+                metadata: ["element": qrElement.id.uuidString]
+            )
+            return
+        }
+
+        let rect = qrElement.frame.cgRect
+
+        guard let drawRect = QRCodeRenderer.pixelPerfectDrawRect(
+            for: qrImage,
+            in: rect
+        ) else {
+            logger.log(
+                .error,
+                "render QR skipped: frame too small",
+                metadata: [
+                    "element": qrElement.id.uuidString,
+                    "frame": rect.diagnosticDescription,
+                    "qrPixels": "\(qrImage.width)x\(qrImage.height)"
+                ]
+            )
+            return
+        }
+
+        logger.log(
+            .render,
+            "render QR element",
+            metadata: [
+                "element": qrElement.id.uuidString,
+                "characters": qrElement.text.count,
+                "correction": qrElement.errorCorrection.rawValue,
+                "frame": rect.diagnosticDescription,
+                "drawRect": drawRect.diagnosticDescription,
+                "moduleScale": Int(drawRect.width) / qrImage.width,
+                "rotation": qrElement.rotationDegrees
+            ]
+        )
+
+        context.saveGState()
+        applyRotation(qrElement.rotationDegrees, around: rect, in: context)
+        context.clip(to: rect)
+        context.setFillColor(UIColor.white.cgColor)
+        context.fill(rect)
+        context.interpolationQuality = .none
+        context.setAllowsAntialiasing(false)
+        context.setShouldAntialias(false)
+        UIImage(cgImage: qrImage, scale: 1, orientation: .up).draw(in: drawRect)
+        context.restoreGState()
     }
 
     private func targetRect(for imageSize: CGSize, in rect: CGRect, contentMode: PrintImageContentMode) -> CGRect {

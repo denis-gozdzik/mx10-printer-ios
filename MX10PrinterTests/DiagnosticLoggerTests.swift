@@ -118,6 +118,7 @@ final class DiagnosticLoggerTests: XCTestCase {
     }
 
     func testLoadingPersistedLogDoesNotWrapFormattedLinesAgain() async throws {
+        let writer = RecordingPersistenceWriter()
         let storageURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension("txt")
@@ -130,7 +131,8 @@ final class DiagnosticLoggerTests: XCTestCase {
         let logger = makeLogger(
             maxEntries: 10,
             storageURL: storageURL,
-            persistenceDebounceInterval: 0.01
+            persistenceDebounceInterval: 0.01,
+            persistenceWriter: writer.write(data:to:)
         )
 
         XCTAssertEqual(logger.entries.map(\.formattedLine), persistedLines)
@@ -139,14 +141,10 @@ final class DiagnosticLoggerTests: XCTestCase {
         logger.log(.app, "new entry")
 
         try await waitUntil {
-            guard let text = try? String(contentsOf: storageURL, encoding: .utf8) else {
-                return false
-            }
-
-            return text.contains("new entry")
+            writer.latestText.contains("new entry")
         }
 
-        let persistedAgain = try String(contentsOf: storageURL, encoding: .utf8)
+        let persistedAgain = writer.latestText
         XCTAssertTrue(persistedAgain.contains("12:34:56.789 [APP] original key=value"))
         XCTAssertFalse(persistedAgain.contains("[APP] 12:34:56.789 [APP]"))
         XCTAssertFalse(persistedAgain.contains("persisted=true"))

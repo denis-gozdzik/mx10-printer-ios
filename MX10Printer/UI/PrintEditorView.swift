@@ -18,6 +18,7 @@ struct PrintEditorView: View {
     @State private var moveStartFrames: [UUID: PrintElementFrame] = [:]
     @State private var resizeStartFrames: [UUID: PrintElementFrame] = [:]
     @State private var statusMessage: String?
+    @StateObject private var previewDebouncer = PreviewDebouncer()
     @FocusState private var isTextInspectorFocused: Bool
 
     private let logger = DiagnosticLogger.shared
@@ -70,13 +71,16 @@ struct PrintEditorView: View {
         .onAppear {
             refreshPreview()
         }
+        .onDisappear {
+            previewDebouncer.cancel()
+        }
         .onChange(of: photoSelection) { _, newValue in
             Task {
                 await addImage(from: newValue)
             }
         }
         .onChange(of: preferencesStore.preferences) { _, _ in
-            refreshPreview()
+            schedulePreviewRefresh()
         }
         .onChange(of: bluetoothManager.printerStateText) { _, newValue in
             guard printQueue.isPrinting, newValue == "Disconnected" else {
@@ -102,13 +106,24 @@ struct PrintEditorView: View {
                     focusTextInspector()
                     logger.log(.editor, "text element added", metadata: ["element": elementID.uuidString])
                     saveDocument()
-                    refreshPreview()
+                    schedulePreviewRefresh()
                 } label: {
                     Label("Text", systemImage: "textformat")
                 }
 
                 PhotosPicker(selection: $photoSelection, matching: .images) {
                     Label("Image", systemImage: "photo")
+                }
+
+                Button {
+                    let elementID = document.addQRCodeElement()
+                    selectedElementID = elementID
+                    dismissEditorKeyboard()
+                    logger.log(.editor, "QR element added", metadata: ["element": elementID.uuidString])
+                    saveDocument()
+                    schedulePreviewRefresh()
+                } label: {
+                    Label("QR", systemImage: "qrcode")
                 }
 
                 Button {
@@ -161,6 +176,11 @@ struct PrintEditorView: View {
 
             if printQueue.isPrinting {
                 ProgressView(value: printQueue.progressFraction)
+            }
+
+            if let latestPreview {
+                Text("\(BitmapRasterizer.targetWidth) px • \(latestPreview.printRowCount) rows")
+                    .foregroundStyle(.secondary)
             }
 
             if let reason = printUnavailableReason {
@@ -236,6 +256,8 @@ struct PrintEditorView: View {
                     textInspector
                 case .image:
                     imageInspector
+                case .qr:
+                    qrInspector
                 }
 
                 HStack {
@@ -252,6 +274,24 @@ struct PrintEditorView: View {
         } else {
             Text("No element selected")
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    private var qrInspector: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            TextEditor(text: selectedQRCodeTextBinding)
+                .frame(minHeight: 96)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color.secondary.opacity(0.35))
+                }
+
+            Picker("Error correction", selection: selectedQRCodeErrorCorrectionBinding) {
+                ForEach(QRCodeErrorCorrection.allCases) { correction in
+                    Text(correction.title).tag(correction)
+                }
+            }
+            .pickerStyle(.segmented)
         }
     }
 
@@ -391,6 +431,21 @@ struct PrintEditorView: View {
                             .foregroundStyle(.secondary)
                     }
             }
+
+        case .qr(let qrElement):
+            if let qrImage = QRCodeRenderer.makeImage(from: qrElement) {
+                Image(decorative: qrImage, scale: 1)
+                    .interpolation(.none)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .background(Color.white)
+            } else {
+                Color.white
+                    .overlay {
+                        Image(systemName: "qrcode")
+                            .foregroundStyle(.secondary)
+                    }
+            }
         }
     }
 
@@ -417,7 +472,7 @@ struct PrintEditorView: View {
             .onEnded { _ in
                 moveStartFrames[elementID] = nil
                 saveDocument()
-                refreshPreview()
+                schedulePreviewRefresh()
             }
     }
 
@@ -444,7 +499,7 @@ struct PrintEditorView: View {
             .onEnded { _ in
                 resizeStartFrames[elementID] = nil
                 saveDocument()
-                refreshPreview()
+                schedulePreviewRefresh()
             }
     }
 
@@ -537,6 +592,14 @@ struct PrintEditorView: View {
         return element
     }
 
+    private var selectedQRCodeElement: QRCodeElement? {
+        guard case .qr(let element) = selectedElement else {
+            return nil
+        }
+
+        return element
+    }
+
     private var selectedImageContentModeBinding: Binding<PrintImageContentMode> {
         Binding(
             get: { selectedImageElement?.contentMode ?? .fit },
@@ -554,6 +617,28 @@ struct PrintEditorView: View {
             set: { isInverted in
                 updateSelectedImage { imageElement in
                     imageElement.isInverted = isInverted
+                }
+            }
+        )
+    }
+
+    private var selectedQRCodeTextBinding: Binding<String> {
+        Binding(
+            get: { selectedQRCodeElement?.text ?? "" },
+            set: { text in
+                updateSelectedQRCode { qrElement in
+                    qrElement.text = text
+                }
+            }
+        )
+    }
+
+    private var selectedQRCodeErrorCorrectionBinding: Binding<QRCodeErrorCorrection> {
+        Binding(
+            get: { selectedQRCodeElement?.errorCorrection ?? .m },
+            set: { correction in
+                updateSelectedQRCode { qrElement in
+                    qrElement.errorCorrection = correction
                 }
             }
         )
@@ -607,7 +692,7 @@ struct PrintEditorView: View {
             photoSelection = nil
             logger.log(.editor, "image element added", metadata: ["element": elementID.uuidString])
             saveDocument()
-            refreshPreview()
+            schedulePreviewRefresh()
         }
     }
 
@@ -642,12 +727,27 @@ struct PrintEditorView: View {
         }
     }
 
+    private func updateSelectedQRCode(_ update: (inout QRCodeElement) -> Void) {
+        guard let selectedElementID else {
+            return
+        }
+
+        updateElement(id: selectedElementID) { element in
+            guard case .qr(var qrElement) = element else {
+                return
+            }
+
+            update(&qrElement)
+            element = .qr(qrElement)
+        }
+    }
+
     private func updateElement(id: UUID, persist: Bool = true, update: (inout PrintElement) -> Void) {
         document.updateElement(id: id, update: update)
 
         if persist {
             saveDocument()
-            refreshPreview()
+            schedulePreviewRefresh()
         }
     }
 
@@ -659,7 +759,7 @@ struct PrintEditorView: View {
 
         self.selectedElementID = duplicateID
         saveDocument()
-        refreshPreview()
+        schedulePreviewRefresh()
     }
 
     private func deleteSelectedElement() {
@@ -670,7 +770,7 @@ struct PrintEditorView: View {
         document.deleteElement(id: selectedElementID)
         self.selectedElementID = nil
         saveDocument()
-        refreshPreview()
+        schedulePreviewRefresh()
     }
 
     private func frame(for elementID: UUID) -> PrintElementFrame? {
@@ -678,10 +778,26 @@ struct PrintEditorView: View {
     }
 
     private func refreshPreview() {
+        let documentSnapshot = document
+        let preferencesSnapshot = preferencesStore.preferences
+        previewDebouncer.performImmediately {
+            buildPreview(document: documentSnapshot, preferences: preferencesSnapshot)
+        }
+    }
+
+    private func schedulePreviewRefresh() {
+        let documentSnapshot = document
+        let preferencesSnapshot = preferencesStore.preferences
+        previewDebouncer.schedule {
+            buildPreview(document: documentSnapshot, preferences: preferencesSnapshot)
+        }
+    }
+
+    private func buildPreview(document: PrintDocument, preferences: PrintingPreferences) {
         do {
             latestPreview = try jobBuilder.makePreview(
                 document: document,
-                preferences: preferencesStore.preferences
+                preferences: preferences
             )
             if statusMessage?.hasPrefix("Render failed") == true {
                 statusMessage = nil
@@ -715,6 +831,7 @@ struct PrintEditorView: View {
         }
 
         documentStore.save(document)
+        previewDebouncer.cancel()
 
         do {
             statusMessage = "Rendering..."
@@ -724,7 +841,7 @@ struct PrintEditorView: View {
             )
             latestPreview = preview
 
-            let job = jobBuilder.makeJob(
+            let job = try jobBuilder.makeJob(
                 document: document,
                 preview: preview,
                 preferences: preferencesStore.preferences
