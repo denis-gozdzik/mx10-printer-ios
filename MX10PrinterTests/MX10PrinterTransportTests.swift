@@ -14,8 +14,8 @@ final class MX10PrinterTransportTests: XCTestCase {
         XCTAssertEqual(transport.beginMaximumObservations.first?.cached, 20)
         XCTAssertEqual(transport.beginMaximumObservations.first?.current, 245)
         XCTAssertEqual(transport.writeMaximumObservations.first?.current, 245)
-        XCTAssertEqual(transport.sentFrames.count, 1)
-        XCTAssertEqual(transport.sentFrames.first?.frame.count, 56)
+        XCTAssertEqual(transport.sentFrames.filter { $0.frame[2] == 0xA2 }.count, 1)
+        XCTAssertEqual(transport.sentFrames.first { $0.frame[2] == 0xA2 }?.frame.count, 56)
     }
 
     func testFiftySixByteA2FrameIsAcceptedWhenFreshMaximumIsTwoFortyFive() async throws {
@@ -26,8 +26,10 @@ final class MX10PrinterTransportTests: XCTestCase {
 
         try await printer.print(job: makeJob(rowCount: 1)) { _ in }
 
-        XCTAssertEqual(transport.sentFrames.map { $0.frame.count }, [56])
-        XCTAssertEqual(transport.sentFrames.map { $0.frame[2] }, [0xA2])
+        let rowFrames = transport.sentFrames.filter { $0.frame[2] == 0xA2 }
+
+        XCTAssertEqual(rowFrames.map { $0.frame.count }, [56])
+        XCTAssertEqual(rowFrames.map { $0.frame[2] }, [0xA2])
         XCTAssertEqual(transport.transportState, .completed)
     }
 
@@ -49,7 +51,7 @@ final class MX10PrinterTransportTests: XCTestCase {
             XCTFail("Unexpected error: \(error)")
         }
 
-        XCTAssertTrue(transport.sentFrames.isEmpty)
+        XCTAssertTrue(transport.sentFrames.allSatisfy { $0.frame[2] != 0xA2 })
         XCTAssertEqual(transport.transportState, .failed)
     }
 
@@ -66,13 +68,13 @@ final class MX10PrinterTransportTests: XCTestCase {
         }
 
         XCTAssertEqual(rowProgress, [1, 2, 3, 4])
-        XCTAssertEqual(transport.sentFrames.count, 4)
+        XCTAssertEqual(transport.sentFrames.filter { $0.frame[2] == 0xA2 }.count, 4)
     }
 
     func testBackpressureResumesSameRowWithoutDuplication() async throws {
         let transport = MockFrameTransport()
         transport.maximumWriteReadings = [245, 245, 245]
-        transport.waitBeforeFrameIndexes = [1]
+        transport.waitBeforeFrameIndexes = [6]
         let printer = makePrinter(transport: transport)
         let job = makeJob(rowCount: 2)
 
@@ -83,16 +85,34 @@ final class MX10PrinterTransportTests: XCTestCase {
         try await waitUntil {
             transport.didBackpressure
         }
-        XCTAssertEqual(transport.sentFrames.map { $0.context.rowIndex }, [0])
+        XCTAssertEqual(transport.sentFrames.compactMap { $0.context.rowIndex }, [0])
 
         transport.markPeripheralReady()
         try await task.value
 
-        XCTAssertEqual(transport.sentFrames.map { $0.context.rowIndex }, [0, 1])
+        XCTAssertEqual(transport.sentFrames.compactMap { $0.context.rowIndex }, [0, 1])
         XCTAssertEqual(transport.transportState, .completed)
     }
 
-    func testPrinterSendsRowsBeforeFeedAndReportsBytes() async throws {
+    func testManualFeedUsesVerifiedA1Frame() async throws {
+        let transport = MockFrameTransport()
+        let printer = makePrinter(transport: transport)
+
+        printer.feed(steps: 16)
+
+        try await waitUntil {
+            transport.sentFrames.count == 1
+        }
+
+        XCTAssertEqual(
+            transport.sentFrames.first?.frame,
+            Data([0x51, 0x78, 0xA1, 0x00, 0x02, 0x00, 0x10, 0x00, 0x57, 0xFF])
+        )
+        XCTAssertEqual(transport.sentFrames.first?.context.command, 0xA1)
+        XCTAssertEqual(transport.sentFrames.first?.context.kind, .feed)
+    }
+
+    func testPrinterSendsSessionCommandSequenceAndReportsBytes() async throws {
         let transport = MockFrameTransport()
         let printer = makePrinter(transport: transport)
         let job = PrintJob(
@@ -109,9 +129,45 @@ final class MX10PrinterTransportTests: XCTestCase {
             progressEvents.append(progress)
         }
 
-        XCTAssertEqual(transport.sentFrames.map { $0.context.kind }, [.bitmapRow, .bitmapRow, .feed])
-        XCTAssertEqual(transport.sentFrames.map { $0.frame[2] }, [0xA2, 0xA2, 0xA1])
-        XCTAssertEqual(progressEvents.last?.bytesSent, 56 + 56 + 10)
+        XCTAssertEqual(transport.sentFrames.map { $0.frame[2] }, [
+            0xA3, 0xA4, 0xAF, 0xBE, 0xA6,
+            0xA2, 0xA2,
+            0xBD, 0xA1, 0xA6, 0xA3
+        ])
+        XCTAssertEqual(transport.sentFrames.filter { $0.frame[2] == 0xA2 }.count, 2)
+        XCTAssertEqual(progressEvents.last?.bytesSent, 215)
+    }
+
+    func testPrintCompletionOccursOnlyAfterCompleteSessionSequence() async throws {
+        let transport = MockFrameTransport()
+        let printer = makePrinter(transport: transport)
+
+        try await printer.print(job: makeJob(rowCount: 3)) { _ in }
+
+        XCTAssertEqual(transport.sentFrames.map { $0.frame[2] }, [
+            0xA3, 0xA4, 0xAF, 0xBE, 0xA6,
+            0xA2, 0xA2, 0xA2,
+            0xBD, 0xA1, 0xA6, 0xA3
+        ])
+        XCTAssertEqual(transport.sentFrames.filter { $0.frame[2] == 0xA2 }.count, 3)
+        XCTAssertEqual(transport.completedAfterFrameCount, transport.sentFrames.count)
+        XCTAssertEqual(transport.completedAfterFrameCount, 12)
+    }
+
+    func testPrintTestPatternUsesCompleteSessionSequence() async throws {
+        let transport = MockFrameTransport()
+        let printer = makePrinter(transport: transport)
+        let rowCount = BitmapEncoder.testRows().count
+
+        printer.printTestPattern()
+
+        try await waitUntil {
+            transport.completedAfterFrameCount != nil
+        }
+
+        XCTAssertEqual(transport.sentFrames.map { $0.frame[2] }, expectedSessionCommands(rowCount: rowCount))
+        XCTAssertEqual(transport.sentFrames.filter { $0.frame[2] == 0xA2 }.count, rowCount)
+        XCTAssertEqual(transport.completedAfterFrameCount, transport.sentFrames.count)
     }
 
     func testBitmapRowDiagnosticsAreMarkedForFirstLastAndEveryFiftiethRow() {
@@ -156,6 +212,12 @@ final class MX10PrinterTransportTests: XCTestCase {
         )
     }
 
+    private func expectedSessionCommands(rowCount: Int) -> [UInt8] {
+        [0xA3, 0xA4, 0xAF, 0xBE, 0xA6]
+            + Array(repeating: 0xA2, count: rowCount)
+            + [0xBD, 0xA1, 0xA6, 0xA3]
+    }
+
     private func makeLogger() -> DiagnosticLogger {
         DiagnosticLogger(
             maxEntries: 100,
@@ -191,6 +253,7 @@ private final class MockFrameTransport: PrintFrameTransport {
     private(set) var sentFrames: [(frame: Data, context: PrintPacketContext)] = []
     private(set) var beginMaximumObservations: [(cached: Int?, current: Int)] = []
     private(set) var writeMaximumObservations: [(cached: Int?, current: Int, frameBytes: Int)] = []
+    private(set) var completedAfterFrameCount: Int?
 
     private var readinessContinuation: CheckedContinuation<Void, Never>?
     private var frameIndex = 0
@@ -252,6 +315,7 @@ private final class MockFrameTransport: PrintFrameTransport {
     }
 
     func completePrintTransport(jobID: UUID) {
+        completedAfterFrameCount = sentFrames.count
         transportState = .completed
     }
 

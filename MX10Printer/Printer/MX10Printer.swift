@@ -71,38 +71,23 @@ final class MX10Printer: PrintJobPrinting {
     }
 
     func printTestPattern() {
-        Task { [transport, configuration, logger] in
+        Task { [self, logger] in
             let rows = BitmapEncoder.testRows()
-            let jobID = UUID()
-            transport.beginPrintTransport(
-                jobID: jobID,
-                totalRows: rows.count,
-                configuration: configuration.transport
-            )
+            let job = PrintJob(documentID: UUID(), rows: rows)
             logger.log(
                 .printer,
                 "test pattern start",
-                metadata: ["job": jobID.uuidString, "rows": rows.count]
+                metadata: ["job": job.id.uuidString, "rows": rows.count]
             )
 
             do {
-                for (index, row) in rows.enumerated() {
-                    let frame = try MX10Protocol.printRow(row)
-                    try await transport.sendFrame(
-                        frame,
-                        context: .bitmapRow(jobID: jobID, rowIndex: index, totalRows: rows.count)
-                    )
-                    try await sleepIfNeeded(configuration.transport.interPacketDelayNanoseconds)
-                }
-
-                transport.completePrintTransport(jobID: jobID)
-                logger.log(.printer, "test pattern completed", metadata: ["job": jobID.uuidString])
+                try await self.print(job: job) { _ in }
+                logger.log(.printer, "test pattern completed", metadata: ["job": job.id.uuidString])
             } catch {
-                transport.failPrintTransport(jobID: jobID, reason: error.localizedDescription)
                 logger.log(
                     .error,
                     "test pattern failed",
-                    metadata: ["job": jobID.uuidString, "error": error.localizedDescription]
+                    metadata: ["job": job.id.uuidString, "error": error.localizedDescription]
                 )
             }
         }
@@ -128,16 +113,7 @@ final class MX10Printer: PrintJobPrinting {
             metadata: [
                 "job": job.id.uuidString,
                 "rows": job.rows.count,
-                "feedAfterPrintSteps": job.feedAfterPrintSteps,
                 "sequence": printSequenceDescription
-            ]
-        )
-        logger.log(
-            .printer,
-            "unverified init commands disabled",
-            metadata: [
-                "job": job.id.uuidString,
-                "allowUnverifiedInitializationCommands": configuration.allowUnverifiedInitializationCommands
             ]
         )
 
@@ -174,6 +150,52 @@ final class MX10Printer: PrintJobPrinting {
         )
 
         do {
+            try await sendSessionFrame(
+                MX10Protocol.requestStatus(),
+                command: 0xA3,
+                kind: .status,
+                job: job,
+                currentRow: currentRow,
+                bytesSent: &bytesSent,
+                progress: progress
+            )
+            try await sendSessionFrame(
+                MX10Protocol.setQuality(),
+                command: 0xA4,
+                kind: .control,
+                job: job,
+                currentRow: currentRow,
+                bytesSent: &bytesSent,
+                progress: progress
+            )
+            try await sendSessionFrame(
+                MX10Protocol.setEnergy(),
+                command: 0xAF,
+                kind: .control,
+                job: job,
+                currentRow: currentRow,
+                bytesSent: &bytesSent,
+                progress: progress
+            )
+            try await sendSessionFrame(
+                MX10Protocol.applyEnergy(),
+                command: 0xBE,
+                kind: .control,
+                job: job,
+                currentRow: currentRow,
+                bytesSent: &bytesSent,
+                progress: progress
+            )
+            try await sendSessionFrame(
+                MX10Protocol.latticeStart(),
+                command: 0xA6,
+                kind: .control,
+                job: job,
+                currentRow: currentRow,
+                bytesSent: &bytesSent,
+                progress: progress
+            )
+
             for (index, row) in job.rows.enumerated() {
                 try Task.checkCancellation()
 
@@ -204,29 +226,42 @@ final class MX10Printer: PrintJobPrinting {
                 try await sleepIfNeeded(configuration.transport.interPacketDelayNanoseconds)
             }
 
-            if job.feedAfterPrintSteps > 0 {
-                let feedFrame = MX10Protocol.feed(steps: job.feedAfterPrintSteps)
-                try await transport.sendFrame(
-                    feedFrame,
-                    context: .control(
-                        command: 0xA1,
-                        kind: .feed,
-                        jobID: job.id,
-                        shouldLogFullHex: true
-                    )
-                )
-                bytesSent += feedFrame.count
-                progress(
-                    PrintJobProgress(
-                        jobID: job.id,
-                        currentRow: currentRow,
-                        totalRows: job.rows.count,
-                        bytesSent: bytesSent,
-                        timestamp: Date(),
-                        activity: .controlSent
-                    )
-                )
-            }
+            try await sendSessionFrame(
+                MX10Protocol.feedPaper(lines: 0),
+                command: 0xBD,
+                kind: .feed,
+                job: job,
+                currentRow: currentRow,
+                bytesSent: &bytesSent,
+                progress: progress
+            )
+            try await sendSessionFrame(
+                MX10Protocol.setPaper(),
+                command: 0xA1,
+                kind: .control,
+                job: job,
+                currentRow: currentRow,
+                bytesSent: &bytesSent,
+                progress: progress
+            )
+            try await sendSessionFrame(
+                MX10Protocol.latticeEnd(),
+                command: 0xA6,
+                kind: .control,
+                job: job,
+                currentRow: currentRow,
+                bytesSent: &bytesSent,
+                progress: progress
+            )
+            try await sendSessionFrame(
+                MX10Protocol.requestStatus(),
+                command: 0xA3,
+                kind: .status,
+                job: job,
+                currentRow: currentRow,
+                bytesSent: &bytesSent,
+                progress: progress
+            )
 
             transport.completePrintTransport(jobID: job.id)
             progress(
@@ -288,7 +323,40 @@ final class MX10Printer: PrintJobPrinting {
     }
 
     private var printSequenceDescription: String {
-        "bitmap rows; optional feed; no unverified A8/BB/A4/A6/AF/BE/BD/BF init sequence"
+        "A3 A4 AF BE A6; bitmap rows as A2; BD A1 A6 A3; no BF compression"
+    }
+
+    private func sendSessionFrame(
+        _ frame: Data,
+        command: UInt8,
+        kind: PrintPacketKind,
+        job: PrintJob,
+        currentRow: Int,
+        bytesSent: inout Int,
+        progress: @escaping (PrintJobProgress) -> Void
+    ) async throws {
+        try Task.checkCancellation()
+        try await transport.sendFrame(
+            frame,
+            context: .control(
+                command: command,
+                kind: kind,
+                jobID: job.id,
+                shouldLogFullHex: true
+            )
+        )
+        bytesSent += frame.count
+        progress(
+            PrintJobProgress(
+                jobID: job.id,
+                currentRow: currentRow,
+                totalRows: job.rows.count,
+                bytesSent: bytesSent,
+                timestamp: Date(),
+                activity: .controlSent
+            )
+        )
+        try await sleepIfNeeded(configuration.transport.interPacketDelayNanoseconds)
     }
 
     private func sendControlFrame(

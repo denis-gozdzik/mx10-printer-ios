@@ -21,22 +21,29 @@ struct DiagnosticLogEntry: Identifiable, Equatable {
     let category: DiagnosticCategory
     let message: String
     let metadata: [String: String]
+    let preformattedLine: String?
 
     init(
         id: UUID = UUID(),
         timestamp: Date = Date(),
         category: DiagnosticCategory,
         message: String,
-        metadata: [String: String] = [:]
+        metadata: [String: String] = [:],
+        preformattedLine: String? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
         self.category = category
         self.message = message
         self.metadata = metadata
+        self.preformattedLine = preformattedLine
     }
 
     var formattedLine: String {
+        if let preformattedLine {
+            return preformattedLine
+        }
+
         var line = "\(Self.timestampString(from: timestamp)) [\(category.rawValue)] \(message)"
         let metadataText = metadata
             .sorted { $0.key < $1.key }
@@ -306,7 +313,7 @@ final class DiagnosticLogger: ObservableObject {
                 DiagnosticLogEntry(
                     category: .app,
                     message: String(line),
-                    metadata: ["persisted": "true"]
+                    preformattedLine: String(line)
                 )
             }
     }
