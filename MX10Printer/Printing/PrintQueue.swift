@@ -1,15 +1,19 @@
+import Combine
 import Foundation
 
 struct PrintQueueConfiguration: Equatable {
     var inactivityTimeout: TimeInterval
     var timeoutCheckIntervalNanoseconds: UInt64
+    var progressPublishInterval: TimeInterval
 
     init(
         inactivityTimeout: TimeInterval = 30,
-        timeoutCheckIntervalNanoseconds: UInt64 = 250_000_000
+        timeoutCheckIntervalNanoseconds: UInt64 = 250_000_000,
+        progressPublishInterval: TimeInterval = 0.075
     ) {
         self.inactivityTimeout = inactivityTimeout
         self.timeoutCheckIntervalNanoseconds = timeoutCheckIntervalNanoseconds
+        self.progressPublishInterval = progressPublishInterval
     }
 }
 
@@ -33,7 +37,7 @@ final class PrintQueue: ObservableObject {
     @Published private(set) var completedJobs: [PrintJob] = []
     @Published private(set) var failedJobs: [PrintJobFailure] = []
     @Published private(set) var cancelledJobs: [PrintJob] = []
-    @Published private(set) var currentJob: PrintJob?
+    private(set) var currentJob: PrintJob?
 
     private let configuration: PrintQueueConfiguration
     private let logger: DiagnosticLogger
@@ -41,6 +45,7 @@ final class PrintQueue: ObservableObject {
     private weak var activePrinter: PrintJobPrinting?
     private var cancellationRequestedJobIDs: Set<UUID> = []
     private var timedOutJobIDs: Set<UUID> = []
+    private var lastProgressPublicationAt: Date?
 
     init(
         configuration: PrintQueueConfiguration = PrintQueueConfiguration(),
@@ -189,7 +194,7 @@ final class PrintQueue: ObservableObject {
         workerTask?.cancel()
         job.markFailed(reason: reason)
         failedJobs.append(PrintJobFailure(job: job, message: reason))
-        currentJob = nil
+        setCurrentJob(nil)
         activePrinter = nil
         workerTask = nil
     }
@@ -210,7 +215,7 @@ final class PrintQueue: ObservableObject {
         while !pendingJobs.isEmpty, !Task.isCancelled {
             var job = pendingJobs.removeFirst()
             job.markSending()
-            currentJob = job
+            setCurrentJob(job)
             logger.log(
                 .queue,
                 "start",
@@ -230,7 +235,7 @@ final class PrintQueue: ObservableObject {
 
                 completedJob.markCompleted()
                 completedJobs.append(completedJob)
-                currentJob = nil
+                setCurrentJob(nil)
                 logger.log(
                     .queue,
                     "complete",
@@ -273,7 +278,7 @@ final class PrintQueue: ObservableObject {
                     )
                 }
 
-                currentJob = nil
+                setCurrentJob(nil)
             }
         }
 
@@ -392,7 +397,19 @@ final class PrintQueue: ObservableObject {
         }
 
         job.apply(progress: progress)
+        let shouldPublishProgress = shouldPublishProgress(progress, for: job)
+
+        if shouldPublishProgress {
+            objectWillChange.send()
+        }
+
         currentJob = job
+
+        guard shouldPublishProgress else {
+            return
+        }
+
+        lastProgressPublicationAt = progress.timestamp
         let uiStatus = currentStatusText
         let uiProgressValue = progressFraction
         logger.log(
@@ -407,6 +424,34 @@ final class PrintQueue: ObservableObject {
                 "uiProgressFraction": String(format: "%.4f", uiProgressValue)
             ]
         )
+    }
+
+    private func setCurrentJob(_ job: PrintJob?) {
+        if currentJob?.id != job?.id {
+            lastProgressPublicationAt = nil
+        }
+
+        objectWillChange.send()
+        currentJob = job
+    }
+
+    private func shouldPublishProgress(_ progress: PrintJobProgress, for job: PrintJob) -> Bool {
+        switch progress.activity {
+        case .started, .controlSent, .completed:
+            return true
+        case .rowSent:
+            if job.currentRow >= job.rowCount {
+                return true
+            }
+
+            guard let lastProgressPublicationAt else {
+                return true
+            }
+
+            return progress.timestamp.timeIntervalSince(lastProgressPublicationAt) >= configuration.progressPublishInterval
+        case .peripheralReady, .notificationReceived:
+            return false
+        }
     }
 
     private func currentJobTimedOut(now: Date) -> Bool {

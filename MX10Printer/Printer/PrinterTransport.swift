@@ -55,6 +55,7 @@ struct PrintPacketContext: Equatable {
     var command: UInt8
     var rowIndex: Int?
     var totalRows: Int?
+    var shouldLogFrame: Bool
     var shouldLogFullHex: Bool
 
     static func control(
@@ -69,18 +70,24 @@ struct PrintPacketContext: Equatable {
             command: command,
             rowIndex: nil,
             totalRows: nil,
+            shouldLogFrame: true,
             shouldLogFullHex: shouldLogFullHex
         )
     }
 
     static func bitmapRow(jobID: UUID, rowIndex: Int, totalRows: Int) -> PrintPacketContext {
-        PrintPacketContext(
+        let rowNumber = rowIndex + 1
+        let isFirstRows = rowIndex < 3
+        let isLastRows = rowIndex >= max(0, totalRows - 3)
+
+        return PrintPacketContext(
             jobID: jobID,
             kind: .bitmapRow,
             command: 0xA2,
             rowIndex: rowIndex,
             totalRows: totalRows,
-            shouldLogFullHex: rowIndex < 3 || rowIndex >= max(0, totalRows - 3)
+            shouldLogFrame: isFirstRows || isLastRows || rowNumber.isMultiple(of: 50),
+            shouldLogFullHex: isFirstRows || isLastRows
         )
     }
 }

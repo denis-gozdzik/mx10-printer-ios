@@ -3,16 +3,77 @@ import XCTest
 
 @MainActor
 final class DiagnosticLoggerTests: XCTestCase {
+    func testBackgroundLogDoesNotSynchronouslyWaitForMainThread() async throws {
+        let logger = makeLogger(maxEntries: 10)
+        let didReturn = DispatchSemaphore(value: 0)
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            logger.log(.app, "background nonblocking")
+            didReturn.signal()
+        }
+
+        let result = didReturn.wait(timeout: .now() + 0.2)
+        guard case .success = result else {
+            XCTFail("Background log call waited for the main thread")
+            return
+        }
+
+        try await waitUntil {
+            logger.entries.contains { $0.message == "background nonblocking" }
+        }
+    }
+
+    func testThousandLogCallsDoNotCauseThousandFileWrites() async throws {
+        let writer = RecordingPersistenceWriter()
+        let logger = makeLogger(
+            maxEntries: 2_000,
+            persistenceDebounceInterval: 0.01,
+            persistenceWriter: writer.write(data:to:)
+        )
+
+        for index in 0..<1_000 {
+            logger.log(.app, "entry \(index)")
+        }
+
+        try await waitUntil {
+            writer.writeCount > 0
+        }
+
+        XCTAssertLessThan(writer.writeCount, 1_000)
+    }
+
     func testLoggerKeepsBoundedRingBuffer() {
-        let logger = makeLogger(maxEntries: 3)
+        let logger = makeLogger(maxEntries: 5_000)
 
-        logger.log(.app, "one")
-        logger.log(.ble, "two")
-        logger.log(.queue, "three")
-        logger.log(.printer, "four")
+        for index in 0..<6_000 {
+            logger.log(.app, "entry \(index)")
+        }
 
-        XCTAssertEqual(logger.entries.count, 3)
-        XCTAssertEqual(logger.entries.map(\.message), ["two", "three", "four"])
+        XCTAssertEqual(logger.entries.count, 5_000)
+        XCTAssertEqual(logger.entries.first?.message, "entry 1000")
+        XCTAssertEqual(logger.entries.last?.message, "entry 5999")
+    }
+
+    func testFinalPersistContainsLatestEntries() async throws {
+        let writer = RecordingPersistenceWriter()
+        let logger = makeLogger(
+            maxEntries: 5,
+            persistenceDebounceInterval: 0.01,
+            persistenceWriter: writer.write(data:to:)
+        )
+
+        for index in 0..<7 {
+            logger.log(.queue, "entry \(index)")
+        }
+
+        try await waitUntil {
+            writer.latestText.contains("entry 6")
+        }
+
+        XCTAssertFalse(writer.latestText.contains("entry 0"))
+        XCTAssertFalse(writer.latestText.contains("entry 1"))
+        XCTAssertTrue(writer.latestText.contains("entry 2"))
+        XCTAssertTrue(writer.latestText.contains("entry 6"))
     }
 
     func testLogExportIncludesHeaderAndEntries() {
@@ -56,12 +117,63 @@ final class DiagnosticLoggerTests: XCTestCase {
         XCTAssertEqual(logger.entries.first?.metadata["safe"], "value")
     }
 
-    private func makeLogger(maxEntries: Int) -> DiagnosticLogger {
+    private func makeLogger(
+        maxEntries: Int,
+        persistenceDebounceInterval: TimeInterval = 1,
+        persistenceWriter: @escaping DiagnosticLogger.PersistenceWriter = { data, url in
+            try data.write(to: url, options: [.atomic])
+        }
+    ) -> DiagnosticLogger {
         DiagnosticLogger(
             maxEntries: maxEntries,
             storageURL: FileManager.default.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString)
-                .appendingPathExtension("txt")
+                .appendingPathExtension("txt"),
+            persistenceDebounceInterval: persistenceDebounceInterval,
+            persistenceWriter: persistenceWriter
         )
+    }
+
+    private func waitUntil(_ condition: @escaping () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(2)
+        while !condition() {
+            if Date() >= deadline {
+                XCTFail("Timed out waiting for diagnostic logger")
+                return
+            }
+
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
+}
+
+private final class RecordingPersistenceWriter {
+    private let lock = NSLock()
+    private var storedWriteCount = 0
+    private var storedLatestText = ""
+
+    var writeCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+
+        return storedWriteCount
+    }
+
+    var latestText: String {
+        lock.lock()
+        defer { lock.unlock() }
+
+        return storedLatestText
+    }
+
+    func write(data: Data, to url: URL) throws {
+        let text = String(data: data, encoding: .utf8) ?? ""
+
+        lock.lock()
+        storedWriteCount += 1
+        storedLatestText = text
+        lock.unlock()
+
+        try data.write(to: url, options: [.atomic])
     }
 }
