@@ -50,12 +50,48 @@ enum MX10Protocol {
         return frame(command: 0xA3, payload: payload)
     }
 
-    static func feed(steps: UInt16) -> Data {
-        let payload = Data([
-            UInt8(steps & 0xFF),
-            UInt8((steps >> 8) & 0xFF)
-        ])
-        return frame(command: 0xA1, payload: payload)
+    static func setQuality(_ quality: UInt8 = 0x32) -> Data {
+        frame(command: 0xA4, payload: Data([quality]))
+    }
+
+    static func setEnergy(_ energy: UInt16 = 0xFFFF) -> Data {
+        frame(
+            command: 0xAF,
+            payload: Data([
+                UInt8((energy >> 8) & 0xFF),
+                UInt8(energy & 0xFF)
+            ])
+        )
+    }
+
+    static func applyEnergy(_ mode: UInt8 = 0x01) -> Data {
+        frame(command: 0xBE, payload: Data([mode]))
+    }
+
+    static func latticeStart() -> Data {
+        frame(
+            command: 0xA6,
+            payload: Data([
+                0xAA, 0x55, 0x17, 0x38, 0x44, 0x5F, 0x5F, 0x5F, 0x44, 0x38, 0x2C
+            ])
+        )
+    }
+
+    static func latticeEnd() -> Data {
+        frame(
+            command: 0xA6,
+            payload: Data([
+                0xAA, 0x55, 0x17, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x17
+            ])
+        )
+    }
+
+    static func feedPaper(lines: UInt8 = 0) -> Data {
+        frame(command: 0xBD, payload: Data([lines]))
+    }
+
+    static func setPaper() -> Data {
+        frame(command: 0xA1, payload: Data([0x30, 0x00]))
     }
 
     static func printRow(_ row: Data) throws -> Data {
@@ -63,7 +99,23 @@ enum MX10Protocol {
             throw MX10ProtocolError.invalidPrintRowLength(row.count)
         }
 
-        return frame(command: 0xA2, payload: row)
+        return frame(command: 0xA2, payload: mx10WireRow(from: row))
+    }
+
+    static func mx10WireRow(from row: Data) -> Data {
+        Data(row.map(Self.reverseBitsForMX10Wire))
+    }
+
+    static func reverseBitsForMX10Wire(_ byte: UInt8) -> UInt8 {
+        var input = byte
+        var output: UInt8 = 0
+
+        for _ in 0..<8 {
+            output = (output << 1) | (input & 0x01)
+            input >>= 1
+        }
+
+        return output
     }
 
     static func parseFrame(_ data: Data) -> MX10ProtocolFrame? {

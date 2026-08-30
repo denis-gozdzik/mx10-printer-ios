@@ -117,8 +117,44 @@ final class DiagnosticLoggerTests: XCTestCase {
         XCTAssertEqual(logger.entries.first?.metadata["safe"], "value")
     }
 
+    func testLoadingPersistedLogDoesNotWrapFormattedLinesAgain() async throws {
+        let storageURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("txt")
+        let persistedLines = [
+            "12:34:56.789 [APP] original key=value",
+            "12:34:57.000 [BLE] second"
+        ]
+        try persistedLines.joined(separator: "\n").data(using: .utf8)?.write(to: storageURL, options: [.atomic])
+
+        let logger = makeLogger(
+            maxEntries: 10,
+            storageURL: storageURL,
+            persistenceDebounceInterval: 0.01
+        )
+
+        XCTAssertEqual(logger.entries.map(\.formattedLine), persistedLines)
+        XCTAssertTrue(logger.entries.allSatisfy { $0.metadata.isEmpty })
+
+        logger.log(.app, "new entry")
+
+        try await waitUntil {
+            guard let text = try? String(contentsOf: storageURL, encoding: .utf8) else {
+                return false
+            }
+
+            return text.contains("new entry")
+        }
+
+        let persistedAgain = try String(contentsOf: storageURL, encoding: .utf8)
+        XCTAssertTrue(persistedAgain.contains("12:34:56.789 [APP] original key=value"))
+        XCTAssertFalse(persistedAgain.contains("[APP] 12:34:56.789 [APP]"))
+        XCTAssertFalse(persistedAgain.contains("persisted=true"))
+    }
+
     private func makeLogger(
         maxEntries: Int,
+        storageURL: URL? = nil,
         persistenceDebounceInterval: TimeInterval = 1,
         persistenceWriter: @escaping DiagnosticLogger.PersistenceWriter = { data, url in
             try data.write(to: url, options: [.atomic])
@@ -126,7 +162,7 @@ final class DiagnosticLoggerTests: XCTestCase {
     ) -> DiagnosticLogger {
         DiagnosticLogger(
             maxEntries: maxEntries,
-            storageURL: FileManager.default.temporaryDirectory
+            storageURL: storageURL ?? FileManager.default.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString)
                 .appendingPathExtension("txt"),
             persistenceDebounceInterval: persistenceDebounceInterval,

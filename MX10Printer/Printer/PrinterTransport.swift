@@ -42,7 +42,7 @@ enum PrintPacketKind: String, Codable {
 struct PrinterTransportConfiguration: Equatable, Codable {
     var interPacketDelayNanoseconds: UInt64
 
-    init(interPacketDelayNanoseconds: UInt64 = 5_000_000) {
+    init(interPacketDelayNanoseconds: UInt64 = 20_000_000) {
         self.interPacketDelayNanoseconds = interPacketDelayNanoseconds
     }
 
