@@ -16,6 +16,13 @@ final class MX10ProtocolTests: XCTestCase {
         XCTAssertEqual(actual, expected)
     }
 
+    func testManualFeedFrameFor16Steps() {
+        let actual = MX10Protocol.feed(steps: 16)
+        let expected = Data([0x51, 0x78, 0xA1, 0x00, 0x02, 0x00, 0x10, 0x00, 0x57, 0xFF])
+
+        XCTAssertEqual(actual, expected)
+    }
+
     func testQualityCommandFrame() {
         let actual = MX10Protocol.setQuality()
         let expected = Data([0x51, 0x78, 0xA4, 0x00, 0x01, 0x00, 0x32, 0x9E, 0xFF])

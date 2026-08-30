@@ -53,13 +53,12 @@ final class MX10Printer: PrintJobPrinting {
     }
 
     func feed(steps: UInt16) {
-        let lines = UInt8(min(steps, UInt16(UInt8.max)))
         sendControlFrame(
-            MX10Protocol.feedPaper(lines: lines),
-            command: 0xBD,
+            MX10Protocol.feed(steps: steps),
+            command: 0xA1,
             kind: .feed,
             label: "feed",
-            metadata: ["steps": steps, "lines": lines]
+            metadata: ["steps": steps]
         )
     }
 
@@ -72,38 +71,23 @@ final class MX10Printer: PrintJobPrinting {
     }
 
     func printTestPattern() {
-        Task { [transport, configuration, logger] in
+        Task { [self, logger] in
             let rows = BitmapEncoder.testRows()
-            let jobID = UUID()
-            transport.beginPrintTransport(
-                jobID: jobID,
-                totalRows: rows.count,
-                configuration: configuration.transport
-            )
+            let job = PrintJob(documentID: UUID(), rows: rows)
             logger.log(
                 .printer,
                 "test pattern start",
-                metadata: ["job": jobID.uuidString, "rows": rows.count]
+                metadata: ["job": job.id.uuidString, "rows": rows.count]
             )
 
             do {
-                for (index, row) in rows.enumerated() {
-                    let frame = try MX10Protocol.printRow(row)
-                    try await transport.sendFrame(
-                        frame,
-                        context: .bitmapRow(jobID: jobID, rowIndex: index, totalRows: rows.count)
-                    )
-                    try await sleepIfNeeded(configuration.transport.interPacketDelayNanoseconds)
-                }
-
-                transport.completePrintTransport(jobID: jobID)
-                logger.log(.printer, "test pattern completed", metadata: ["job": jobID.uuidString])
+                try await self.print(job: job) { _ in }
+                logger.log(.printer, "test pattern completed", metadata: ["job": job.id.uuidString])
             } catch {
-                transport.failPrintTransport(jobID: jobID, reason: error.localizedDescription)
                 logger.log(
                     .error,
                     "test pattern failed",
-                    metadata: ["job": jobID.uuidString, "error": error.localizedDescription]
+                    metadata: ["job": job.id.uuidString, "error": error.localizedDescription]
                 )
             }
         }

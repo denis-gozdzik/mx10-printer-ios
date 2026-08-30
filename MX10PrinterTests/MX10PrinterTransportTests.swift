@@ -94,6 +94,24 @@ final class MX10PrinterTransportTests: XCTestCase {
         XCTAssertEqual(transport.transportState, .completed)
     }
 
+    func testManualFeedUsesVerifiedA1Frame() async throws {
+        let transport = MockFrameTransport()
+        let printer = makePrinter(transport: transport)
+
+        printer.feed(steps: 16)
+
+        try await waitUntil {
+            transport.sentFrames.count == 1
+        }
+
+        XCTAssertEqual(
+            transport.sentFrames.first?.frame,
+            Data([0x51, 0x78, 0xA1, 0x00, 0x02, 0x00, 0x10, 0x00, 0x57, 0xFF])
+        )
+        XCTAssertEqual(transport.sentFrames.first?.context.command, 0xA1)
+        XCTAssertEqual(transport.sentFrames.first?.context.kind, .feed)
+    }
+
     func testPrinterSendsSessionCommandSequenceAndReportsBytes() async throws {
         let transport = MockFrameTransport()
         let printer = makePrinter(transport: transport)
@@ -136,6 +154,22 @@ final class MX10PrinterTransportTests: XCTestCase {
         XCTAssertEqual(transport.completedAfterFrameCount, 12)
     }
 
+    func testPrintTestPatternUsesCompleteSessionSequence() async throws {
+        let transport = MockFrameTransport()
+        let printer = makePrinter(transport: transport)
+        let rowCount = BitmapEncoder.testRows().count
+
+        printer.printTestPattern()
+
+        try await waitUntil {
+            transport.completedAfterFrameCount != nil
+        }
+
+        XCTAssertEqual(transport.sentFrames.map { $0.frame[2] }, expectedSessionCommands(rowCount: rowCount))
+        XCTAssertEqual(transport.sentFrames.filter { $0.frame[2] == 0xA2 }.count, rowCount)
+        XCTAssertEqual(transport.completedAfterFrameCount, transport.sentFrames.count)
+    }
+
     func testBitmapRowDiagnosticsAreMarkedForFirstLastAndEveryFiftiethRow() {
         let totalRows = 640
 
@@ -176,6 +210,12 @@ final class MX10PrinterTransportTests: XCTestCase {
                 Data(repeating: 0xFF, count: BitmapRasterizer.rowByteCount)
             }
         )
+    }
+
+    private func expectedSessionCommands(rowCount: Int) -> [UInt8] {
+        [0xA3, 0xA4, 0xAF, 0xBE, 0xA6]
+            + Array(repeating: 0xA2, count: rowCount)
+            + [0xBD, 0xA1, 0xA6, 0xA3]
     }
 
     private func makeLogger() -> DiagnosticLogger {

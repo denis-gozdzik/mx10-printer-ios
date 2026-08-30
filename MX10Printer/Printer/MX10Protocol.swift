@@ -90,6 +90,16 @@ enum MX10Protocol {
         frame(command: 0xBD, payload: Data([lines]))
     }
 
+    static func feed(steps: UInt16) -> Data {
+        frame(
+            command: 0xA1,
+            payload: Data([
+                UInt8(steps & 0xFF),
+                UInt8((steps >> 8) & 0xFF)
+            ])
+        )
+    }
+
     static func setPaper() -> Data {
         frame(command: 0xA1, payload: Data([0x30, 0x00]))
     }
