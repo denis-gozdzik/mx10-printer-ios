@@ -154,7 +154,7 @@ final class DiagnosticLogger: ObservableObject {
         if Thread.isMainThread {
             appendOnMain(entry)
         } else {
-            DispatchQueue.main.sync { [weak self] in
+            DispatchQueue.main.async { [weak self] in
                 self?.appendOnMain(entry)
             }
         }

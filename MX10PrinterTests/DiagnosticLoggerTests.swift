@@ -3,6 +3,26 @@ import XCTest
 
 @MainActor
 final class DiagnosticLoggerTests: XCTestCase {
+    func testBackgroundLogDoesNotSynchronouslyWaitForMainThread() async throws {
+        let logger = makeLogger(maxEntries: 10)
+        let didReturn = DispatchSemaphore(value: 0)
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            logger.log(.app, "background nonblocking")
+            didReturn.signal()
+        }
+
+        let result = didReturn.wait(timeout: .now() + 0.2)
+        guard case .success = result else {
+            XCTFail("Background log call waited for the main thread")
+            return
+        }
+
+        try await waitUntil {
+            logger.entries.contains { $0.message == "background nonblocking" }
+        }
+    }
+
     func testThousandLogCallsDoNotCauseThousandFileWrites() async throws {
         let writer = RecordingPersistenceWriter()
         let logger = makeLogger(
