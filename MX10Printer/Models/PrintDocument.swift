@@ -63,6 +63,18 @@ struct PrintDocument: Identifiable, Codable, Equatable {
         return element.id
     }
 
+    mutating func addQRCodeElement() -> UUID {
+        let element = QRCodeElement(
+            frame: PrintElementFrame(x: 92, y: 48, width: 200, height: 200),
+            text: "https://example.com"
+        )
+        var page = firstPage
+        page.elements.append(.qr(element))
+        firstPage = page
+        touch()
+        return element.id
+    }
+
     mutating func updateElement(id: UUID, update: (inout PrintElement) -> Void) {
         guard let index = firstPage.elements.firstIndex(where: { $0.id == id }) else {
             return
@@ -184,16 +196,19 @@ struct NormalizedCropRect: Codable, Equatable {
 enum PrintElement: Identifiable, Codable, Equatable {
     case text(TextElement)
     case image(ImageElement)
+    case qr(QRCodeElement)
 
     private enum CodingKeys: CodingKey {
         case type
         case text
         case image
+        case qr
     }
 
     private enum ElementType: String, Codable {
         case text
         case image
+        case qr
     }
 
     var id: UUID {
@@ -201,6 +216,8 @@ enum PrintElement: Identifiable, Codable, Equatable {
         case .text(let element):
             return element.id
         case .image(let element):
+            return element.id
+        case .qr(let element):
             return element.id
         }
     }
@@ -212,6 +229,8 @@ enum PrintElement: Identifiable, Codable, Equatable {
                 return element.frame
             case .image(let element):
                 return element.frame
+            case .qr(let element):
+                return element.frame
             }
         }
         set {
@@ -222,6 +241,9 @@ enum PrintElement: Identifiable, Codable, Equatable {
             case .image(var element):
                 element.frame = newValue
                 self = .image(element)
+            case .qr(var element):
+                element.frame = newValue
+                self = .qr(element)
             }
         }
     }
@@ -231,6 +253,8 @@ enum PrintElement: Identifiable, Codable, Equatable {
         case .text(let element):
             return element.rotationDegrees
         case .image(let element):
+            return element.rotationDegrees
+        case .qr(let element):
             return element.rotationDegrees
         }
     }
@@ -245,6 +269,10 @@ enum PrintElement: Identifiable, Codable, Equatable {
             element.id = UUID()
             element.frame = element.frame.offsetBy(dx: 16, dy: 16)
             return .image(element)
+        case .qr(var element):
+            element.id = UUID()
+            element.frame = element.frame.offsetBy(dx: 16, dy: 16)
+            return .qr(element)
         }
     }
 
@@ -256,6 +284,8 @@ enum PrintElement: Identifiable, Codable, Equatable {
             self = .text(try container.decode(TextElement.self, forKey: .text))
         case .image:
             self = .image(try container.decode(ImageElement.self, forKey: .image))
+        case .qr:
+            self = .qr(try container.decode(QRCodeElement.self, forKey: .qr))
         }
     }
 
@@ -268,6 +298,9 @@ enum PrintElement: Identifiable, Codable, Equatable {
         case .image(let element):
             try container.encode(ElementType.image, forKey: .type)
             try container.encode(element, forKey: .image)
+        case .qr(let element):
+            try container.encode(ElementType.qr, forKey: .type)
+            try container.encode(element, forKey: .qr)
         }
     }
 }
@@ -329,6 +362,38 @@ struct ImageElement: Identifiable, Codable, Equatable {
         self.rotationDegrees = rotationDegrees
         self.isInverted = isInverted
     }
+}
+
+struct QRCodeElement: Identifiable, Codable, Equatable {
+    var id: UUID
+    var frame: PrintElementFrame
+    var text: String
+    var errorCorrection: QRCodeErrorCorrection
+    var rotationDegrees: Double
+
+    init(
+        id: UUID = UUID(),
+        frame: PrintElementFrame,
+        text: String = "https://example.com",
+        errorCorrection: QRCodeErrorCorrection = .m,
+        rotationDegrees: Double = 0
+    ) {
+        self.id = id
+        self.frame = frame
+        self.text = text
+        self.errorCorrection = errorCorrection
+        self.rotationDegrees = rotationDegrees
+    }
+}
+
+enum QRCodeErrorCorrection: String, CaseIterable, Codable, Identifiable {
+    case l = "L"
+    case m = "M"
+    case q = "Q"
+    case h = "H"
+
+    var id: String { rawValue }
+    var title: String { rawValue }
 }
 
 enum PrintTextAlignment: String, CaseIterable, Codable, Identifiable {
