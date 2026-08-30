@@ -117,6 +117,46 @@ final class QRCodeTests: XCTestCase {
         }
     }
 
+    func testQRCodeQuietZoneIsWhite() throws {
+        let image = try XCTUnwrap(QRCodeRenderer.makeImage(text: "https://example.com"))
+        let pixels = rgbaPixels(from: image)
+
+        for index in 0..<QRCodeRenderer.quietZoneModules {
+            assertHorizontalLineIsWhite(y: index, image: image, pixels: pixels)
+            assertHorizontalLineIsWhite(y: image.height - 1 - index, image: image, pixels: pixels)
+            assertVerticalLineIsWhite(x: index, image: image, pixels: pixels)
+            assertVerticalLineIsWhite(x: image.width - 1 - index, image: image, pixels: pixels)
+        }
+    }
+
+    func testPixelPerfectDrawRectReturnsIntegerModuleScaleAndPixelAlignedOrigin() throws {
+        let image = try XCTUnwrap(QRCodeRenderer.makeImage(text: "https://example.com"))
+        let drawRect = try XCTUnwrap(
+            QRCodeRenderer.pixelPerfectDrawRect(
+                for: image,
+                in: CGRect(x: 0, y: 0, width: 200, height: 200)
+            )
+        )
+
+        let scale = drawRect.width / CGFloat(image.width)
+
+        XCTAssertEqual(scale, floor(scale))
+        XCTAssertEqual(drawRect.origin.x, floor(drawRect.origin.x))
+        XCTAssertEqual(drawRect.origin.y, floor(drawRect.origin.y))
+    }
+
+    func testPixelPerfectDrawRectReturnsNilWhenFrameIsSmallerThanQRSourceImage() throws {
+        let image = try XCTUnwrap(QRCodeRenderer.makeImage(text: "https://example.com"))
+        let rect = CGRect(
+            x: 0,
+            y: 0,
+            width: CGFloat(image.width - 1),
+            height: CGFloat(image.height - 1)
+        )
+
+        XCTAssertNil(QRCodeRenderer.pixelPerfectDrawRect(for: image, in: rect))
+    }
+
     private func rgbaPixels(from image: CGImage) -> [UInt8] {
         let width = image.width
         let height = image.height
@@ -143,5 +183,45 @@ final class QRCodeTests: XCTestCase {
         }
 
         return pixels
+    }
+
+    private func assertHorizontalLineIsWhite(
+        y: Int,
+        image: CGImage,
+        pixels: [UInt8],
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        for x in 0..<image.width {
+            assertPixelIsWhite(x: x, y: y, image: image, pixels: pixels, file: file, line: line)
+        }
+    }
+
+    private func assertVerticalLineIsWhite(
+        x: Int,
+        image: CGImage,
+        pixels: [UInt8],
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        for y in 0..<image.height {
+            assertPixelIsWhite(x: x, y: y, image: image, pixels: pixels, file: file, line: line)
+        }
+    }
+
+    private func assertPixelIsWhite(
+        x: Int,
+        y: Int,
+        image: CGImage,
+        pixels: [UInt8],
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let offset = (y * image.width + x) * 4
+
+        XCTAssertEqual(pixels[offset], 255, file: file, line: line)
+        XCTAssertEqual(pixels[offset + 1], 255, file: file, line: line)
+        XCTAssertEqual(pixels[offset + 2], 255, file: file, line: line)
+        XCTAssertEqual(pixels[offset + 3], 255, file: file, line: line)
     }
 }

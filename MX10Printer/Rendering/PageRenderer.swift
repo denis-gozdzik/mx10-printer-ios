@@ -267,13 +267,22 @@ struct PageRenderer {
         }
 
         let rect = qrElement.frame.cgRect
-        let side = min(rect.width, rect.height)
-        let drawRect = CGRect(
-            x: rect.midX - side / 2,
-            y: rect.midY - side / 2,
-            width: side,
-            height: side
-        )
+
+        guard let drawRect = QRCodeRenderer.pixelPerfectDrawRect(
+            for: qrImage,
+            in: rect
+        ) else {
+            logger.log(
+                .error,
+                "render QR skipped: frame too small",
+                metadata: [
+                    "element": qrElement.id.uuidString,
+                    "frame": rect.diagnosticDescription,
+                    "qrPixels": "\(qrImage.width)x\(qrImage.height)"
+                ]
+            )
+            return
+        }
 
         logger.log(
             .render,
@@ -284,6 +293,7 @@ struct PageRenderer {
                 "correction": qrElement.errorCorrection.rawValue,
                 "frame": rect.diagnosticDescription,
                 "drawRect": drawRect.diagnosticDescription,
+                "moduleScale": Int(drawRect.width) / qrImage.width,
                 "rotation": qrElement.rotationDegrees
             ]
         )
@@ -294,6 +304,8 @@ struct PageRenderer {
         context.setFillColor(UIColor.white.cgColor)
         context.fill(rect)
         context.interpolationQuality = .none
+        context.setAllowsAntialiasing(false)
+        context.setShouldAntialias(false)
         UIImage(cgImage: qrImage, scale: 1, orientation: .up).draw(in: drawRect)
         context.restoreGState()
     }
