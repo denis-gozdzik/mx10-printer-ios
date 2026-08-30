@@ -139,6 +139,7 @@ final class DiagnosticLoggerTests: XCTestCase {
         logger.log(.app, "new entry")
 
         try await waitUntil {
+            _ = logger.entries.count
             guard let text = try? String(contentsOf: storageURL, encoding: .utf8) else {
                 return false
             }
