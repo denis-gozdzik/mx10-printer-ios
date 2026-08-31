@@ -164,6 +164,7 @@ struct PrintJobFailure: Identifiable, Equatable {
     }
 }
 
+@MainActor
 protocol PrintJobPrinting: AnyObject {
     var diagnosticStateDescription: String { get }
 

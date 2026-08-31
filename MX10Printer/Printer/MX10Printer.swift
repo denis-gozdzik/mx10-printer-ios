@@ -14,6 +14,7 @@ enum MX10PrinterError: LocalizedError {
     }
 }
 
+@MainActor
 final class MX10Printer: PrintJobPrinting {
     private let transport: PrintFrameTransport
     private let configuration: MX10PrintConfiguration

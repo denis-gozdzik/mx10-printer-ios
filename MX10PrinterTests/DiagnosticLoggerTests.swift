@@ -40,6 +40,7 @@ final class DiagnosticLoggerTests: XCTestCase {
         }
 
         XCTAssertLessThan(writer.writeCount, 1_000)
+        withExtendedLifetime(logger) {}
     }
 
     func testLoggerKeepsBoundedRingBuffer() {
@@ -74,6 +75,7 @@ final class DiagnosticLoggerTests: XCTestCase {
         XCTAssertFalse(writer.latestText.contains("entry 1"))
         XCTAssertTrue(writer.latestText.contains("entry 2"))
         XCTAssertTrue(writer.latestText.contains("entry 6"))
+        withExtendedLifetime(logger) {}
     }
 
     func testLogExportIncludesHeaderAndEntries() {
@@ -150,6 +152,7 @@ final class DiagnosticLoggerTests: XCTestCase {
         XCTAssertTrue(persistedAgain.contains("12:34:56.789 [APP] original key=value"))
         XCTAssertFalse(persistedAgain.contains("[APP] 12:34:56.789 [APP]"))
         XCTAssertFalse(persistedAgain.contains("persisted=true"))
+        withExtendedLifetime(logger) {}
     }
 
     private func makeLogger(
