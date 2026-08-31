@@ -276,10 +276,9 @@ struct PrintEditorView: View {
 
     private var qrInspector: some View {
         VStack(alignment: .leading, spacing: 12) {
-            TextField("QR content", text: selectedQRCodeTextBinding)
+            TextField("QR content", text: selectedQRCodeTextBinding, axis: .vertical)
+                .lineLimit(3...8)
                 .textFieldStyle(.roundedBorder)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
 
             Picker("Error correction", selection: selectedQRCodeErrorCorrectionBinding) {
                 ForEach(QRCodeErrorCorrection.allCases) { correction in
@@ -292,7 +291,8 @@ struct PrintEditorView: View {
 
     private var textInspector: some View {
         VStack(alignment: .leading, spacing: 12) {
-            TextField("Text", text: selectedTextBinding)
+            TextField("Text", text: selectedTextBinding, axis: .vertical)
+                .lineLimit(3...8)
                 .textFieldStyle(.roundedBorder)
 
             VStack(alignment: .leading) {
