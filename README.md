@@ -118,10 +118,10 @@ Printing is intentionally observable before new print features are added:
 - Print jobs use explicit lifecycle states: `queued`, `rendering`, `ready`, `sending`, `completed`, `failed`, and `cancelled`.
 - `PrintQueue` uses a 30 second inactivity timeout in the debug build path and must return to an idle/usable state after success, failure, disconnect, timeout, or cancellation.
 - Raster validation requires width `384` and `48` bytes per row. Invalid image decode or invalid raster output is shown to the user and is not silently enqueued.
-- The print preview and print job are built from the same render/raster path. Physical print jobs trim trailing all-white raster rows while preserving a 24-row bottom margin. A Developer option can show the final 1-bit raster preview.
+- The print preview and print job are built from the same render/raster path. A Developer option can show the final 1-bit raster preview exactly as it will be sent.
 - The default raster threshold is `128`. If diagnostics show a different threshold, that value comes from persisted user settings unless a future migration explicitly changes it.
 
-Build 11 verified the current MX10 session on real hardware: `A3`, `A4 32`, `AF FF FF`, `BE 01`, `A6` lattice start, `A2` raster rows, `BD 00`, `A1 30 00`, `A6` lattice end, `A3`. The exact sequence is documented in `AGENTS.md`; this does not imply every alternate command value has been independently verified.
+Compatible-printer protocol notes mention possible commands `A8`, `BB`, `A4`, `A6`, `AF`, `BE`, `BD`, and `BF`, but these remain unverified on this MX10 and are not sent by default. Findings are documented in `AGENTS.md` and guarded by the `MX10PrintConfiguration` / `MX10PrinterProfile` abstraction.
 
 ## iOS build environment
 

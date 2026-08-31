@@ -18,7 +18,7 @@ struct PrintEditorView: View {
     @State private var moveStartFrames: [UUID: PrintElementFrame] = [:]
     @State private var resizeStartFrames: [UUID: PrintElementFrame] = [:]
     @State private var statusMessage: String?
-    @StateObject private var previewDebouncer = PreviewDebouncer()
+    @FocusState private var isTextInspectorFocused: Bool
 
     private let logger = DiagnosticLogger.shared
     private let jobBuilder = PrintJobBuilder()
@@ -70,16 +70,13 @@ struct PrintEditorView: View {
         .onAppear {
             refreshPreview()
         }
-        .onDisappear {
-            previewDebouncer.cancel()
-        }
         .onChange(of: photoSelection) { _, newValue in
             Task {
                 await addImage(from: newValue)
             }
         }
         .onChange(of: preferencesStore.preferences) { _, _ in
-            schedulePreviewRefresh()
+            refreshPreview()
         }
         .onChange(of: bluetoothManager.printerStateText) { _, newValue in
             guard printQueue.isPrinting, newValue == "Disconnected" else {
@@ -102,26 +99,16 @@ struct PrintEditorView: View {
                 Button {
                     let elementID = document.addTextElement()
                     selectedElementID = elementID
+                    focusTextInspector()
                     logger.log(.editor, "text element added", metadata: ["element": elementID.uuidString])
                     saveDocument()
-                    schedulePreviewRefresh()
+                    refreshPreview()
                 } label: {
                     Label("Text", systemImage: "textformat")
                 }
 
                 PhotosPicker(selection: $photoSelection, matching: .images) {
                     Label("Image", systemImage: "photo")
-                }
-
-                Button {
-                    let elementID = document.addQRCodeElement()
-                    selectedElementID = elementID
-                    dismissEditorKeyboard()
-                    logger.log(.editor, "QR element added", metadata: ["element": elementID.uuidString])
-                    saveDocument()
-                    schedulePreviewRefresh()
-                } label: {
-                    Label("QR", systemImage: "qrcode")
                 }
 
                 Button {
@@ -158,6 +145,7 @@ struct PrintEditorView: View {
     }
 
     private func dismissEditorKeyboard() {
+        isTextInspectorFocused = false
         UIApplication.shared.sendAction(
             #selector(UIResponder.resignFirstResponder),
             to: nil,
@@ -173,11 +161,6 @@ struct PrintEditorView: View {
 
             if printQueue.isPrinting {
                 ProgressView(value: printQueue.progressFraction)
-            }
-
-            if let latestPreview {
-                Text("\(BitmapRasterizer.targetWidth) px • \(latestPreview.printRowCount) rows")
-                    .foregroundStyle(.secondary)
             }
 
             if let reason = printUnavailableReason {
@@ -253,8 +236,6 @@ struct PrintEditorView: View {
                     textInspector
                 case .image:
                     imageInspector
-                case .qr:
-                    qrInspector
                 }
 
                 HStack {
@@ -274,26 +255,15 @@ struct PrintEditorView: View {
         }
     }
 
-    private var qrInspector: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            TextField("QR content", text: selectedQRCodeTextBinding)
-                .textFieldStyle(.roundedBorder)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-
-            Picker("Error correction", selection: selectedQRCodeErrorCorrectionBinding) {
-                ForEach(QRCodeErrorCorrection.allCases) { correction in
-                    Text(correction.title).tag(correction)
-                }
-            }
-            .pickerStyle(.segmented)
-        }
-    }
-
     private var textInspector: some View {
         VStack(alignment: .leading, spacing: 12) {
-            TextField("Text", text: selectedTextBinding)
-                .textFieldStyle(.roundedBorder)
+            TextEditor(text: selectedTextBinding)
+                .frame(minHeight: 96)
+                .focused($isTextInspectorFocused)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color.secondary.opacity(0.35))
+                }
 
             VStack(alignment: .leading) {
                 Text("Font size: \(Int(selectedTextElement?.fontSize ?? 28))")
@@ -378,6 +348,12 @@ struct PrintEditorView: View {
                 y: CGFloat(frame.y + frame.height / 2)
             )
             .contentShape(Rectangle())
+            .onTapGesture(count: 2) {
+                selectedElementID = element.id
+                if case .text = element {
+                    focusTextInspector()
+                }
+            }
             .onTapGesture(count: 1) {
                 selectedElementID = element.id
             }
@@ -415,21 +391,6 @@ struct PrintEditorView: View {
                             .foregroundStyle(.secondary)
                     }
             }
-
-        case .qr(let qrElement):
-            if let qrImage = QRCodeRenderer.makeImage(from: qrElement) {
-                Image(decorative: qrImage, scale: 1)
-                    .interpolation(.none)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .background(Color.white)
-            } else {
-                Color.white
-                    .overlay {
-                        Image(systemName: "qrcode")
-                            .foregroundStyle(.secondary)
-                    }
-            }
         }
     }
 
@@ -456,7 +417,7 @@ struct PrintEditorView: View {
             .onEnded { _ in
                 moveStartFrames[elementID] = nil
                 saveDocument()
-                schedulePreviewRefresh()
+                refreshPreview()
             }
     }
 
@@ -483,7 +444,7 @@ struct PrintEditorView: View {
             .onEnded { _ in
                 resizeStartFrames[elementID] = nil
                 saveDocument()
-                schedulePreviewRefresh()
+                refreshPreview()
             }
     }
 
@@ -576,14 +537,6 @@ struct PrintEditorView: View {
         return element
     }
 
-    private var selectedQRCodeElement: QRCodeElement? {
-        guard case .qr(let element) = selectedElement else {
-            return nil
-        }
-
-        return element
-    }
-
     private var selectedImageContentModeBinding: Binding<PrintImageContentMode> {
         Binding(
             get: { selectedImageElement?.contentMode ?? .fit },
@@ -601,28 +554,6 @@ struct PrintEditorView: View {
             set: { isInverted in
                 updateSelectedImage { imageElement in
                     imageElement.isInverted = isInverted
-                }
-            }
-        )
-    }
-
-    private var selectedQRCodeTextBinding: Binding<String> {
-        Binding(
-            get: { selectedQRCodeElement?.text ?? "" },
-            set: { text in
-                updateSelectedQRCode { qrElement in
-                    qrElement.text = text
-                }
-            }
-        )
-    }
-
-    private var selectedQRCodeErrorCorrectionBinding: Binding<QRCodeErrorCorrection> {
-        Binding(
-            get: { selectedQRCodeElement?.errorCorrection ?? .m },
-            set: { correction in
-                updateSelectedQRCode { qrElement in
-                    qrElement.errorCorrection = correction
                 }
             }
         )
@@ -676,7 +607,7 @@ struct PrintEditorView: View {
             photoSelection = nil
             logger.log(.editor, "image element added", metadata: ["element": elementID.uuidString])
             saveDocument()
-            schedulePreviewRefresh()
+            refreshPreview()
         }
     }
 
@@ -711,27 +642,12 @@ struct PrintEditorView: View {
         }
     }
 
-    private func updateSelectedQRCode(_ update: (inout QRCodeElement) -> Void) {
-        guard let selectedElementID else {
-            return
-        }
-
-        updateElement(id: selectedElementID) { element in
-            guard case .qr(var qrElement) = element else {
-                return
-            }
-
-            update(&qrElement)
-            element = .qr(qrElement)
-        }
-    }
-
     private func updateElement(id: UUID, persist: Bool = true, update: (inout PrintElement) -> Void) {
         document.updateElement(id: id, update: update)
 
         if persist {
             saveDocument()
-            schedulePreviewRefresh()
+            refreshPreview()
         }
     }
 
@@ -743,7 +659,7 @@ struct PrintEditorView: View {
 
         self.selectedElementID = duplicateID
         saveDocument()
-        schedulePreviewRefresh()
+        refreshPreview()
     }
 
     private func deleteSelectedElement() {
@@ -754,7 +670,7 @@ struct PrintEditorView: View {
         document.deleteElement(id: selectedElementID)
         self.selectedElementID = nil
         saveDocument()
-        schedulePreviewRefresh()
+        refreshPreview()
     }
 
     private func frame(for elementID: UUID) -> PrintElementFrame? {
@@ -762,26 +678,10 @@ struct PrintEditorView: View {
     }
 
     private func refreshPreview() {
-        let documentSnapshot = document
-        let preferencesSnapshot = preferencesStore.preferences
-        previewDebouncer.performImmediately {
-            buildPreview(document: documentSnapshot, preferences: preferencesSnapshot)
-        }
-    }
-
-    private func schedulePreviewRefresh() {
-        let documentSnapshot = document
-        let preferencesSnapshot = preferencesStore.preferences
-        previewDebouncer.schedule {
-            buildPreview(document: documentSnapshot, preferences: preferencesSnapshot)
-        }
-    }
-
-    private func buildPreview(document: PrintDocument, preferences: PrintingPreferences) {
         do {
             latestPreview = try jobBuilder.makePreview(
                 document: document,
-                preferences: preferences
+                preferences: preferencesStore.preferences
             )
             if statusMessage?.hasPrefix("Render failed") == true {
                 statusMessage = nil
@@ -815,7 +715,6 @@ struct PrintEditorView: View {
         }
 
         documentStore.save(document)
-        previewDebouncer.cancel()
 
         do {
             statusMessage = "Rendering..."
@@ -825,7 +724,7 @@ struct PrintEditorView: View {
             )
             latestPreview = preview
 
-            let job = try jobBuilder.makeJob(
+            let job = jobBuilder.makeJob(
                 document: document,
                 preview: preview,
                 preferences: preferencesStore.preferences
@@ -838,6 +737,12 @@ struct PrintEditorView: View {
         } catch {
             statusMessage = "Render failed: \(error.localizedDescription)"
             logger.log(.error, "print job build failed", metadata: ["error": error.localizedDescription])
+        }
+    }
+
+    private func focusTextInspector() {
+        DispatchQueue.main.async {
+            isTextInspectorFocused = true
         }
     }
 
