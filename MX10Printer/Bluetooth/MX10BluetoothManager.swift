@@ -38,7 +38,8 @@ private struct PendingWriteResumeContext {
     let frameDescription: String
 }
 
-final class MX10BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripheralDelegate, PrintFrameTransport {
+@MainActor
+final class MX10BluetoothManager: NSObject, ObservableObject, @preconcurrency CBCentralManagerDelegate, @preconcurrency CBPeripheralDelegate, PrintFrameTransport {
     static let advertisedServiceUUIDString = "AF30"
     static let protocolServiceUUIDString = "AE30"
     static let writeCharacteristicUUIDString = "AE01"

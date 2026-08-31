@@ -125,6 +125,7 @@ enum PrintTransportError: LocalizedError, Equatable {
     }
 }
 
+@MainActor
 protocol PrintFrameTransport: AnyObject {
     var canSendPrintData: Bool { get }
     var maxWriteWithoutResponseLength: Int? { get }
