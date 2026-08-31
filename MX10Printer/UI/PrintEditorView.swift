@@ -19,7 +19,6 @@ struct PrintEditorView: View {
     @State private var resizeStartFrames: [UUID: PrintElementFrame] = [:]
     @State private var statusMessage: String?
     @StateObject private var previewDebouncer = PreviewDebouncer()
-    @FocusState private var isTextInspectorFocused: Bool
 
     private let logger = DiagnosticLogger.shared
     private let jobBuilder = PrintJobBuilder()
@@ -103,7 +102,6 @@ struct PrintEditorView: View {
                 Button {
                     let elementID = document.addTextElement()
                     selectedElementID = elementID
-                    focusTextInspector()
                     logger.log(.editor, "text element added", metadata: ["element": elementID.uuidString])
                     saveDocument()
                     schedulePreviewRefresh()
@@ -160,7 +158,6 @@ struct PrintEditorView: View {
     }
 
     private func dismissEditorKeyboard() {
-        isTextInspectorFocused = false
         UIApplication.shared.sendAction(
             #selector(UIResponder.resignFirstResponder),
             to: nil,
@@ -279,12 +276,9 @@ struct PrintEditorView: View {
 
     private var qrInspector: some View {
         VStack(alignment: .leading, spacing: 12) {
-            TextEditor(text: selectedQRCodeTextBinding)
-                .frame(minHeight: 96)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(Color.secondary.opacity(0.35))
-                }
+            TextField("QR content", text: selectedQRCodeTextBinding, axis: .vertical)
+                .lineLimit(3...8)
+                .textFieldStyle(.roundedBorder)
 
             Picker("Error correction", selection: selectedQRCodeErrorCorrectionBinding) {
                 ForEach(QRCodeErrorCorrection.allCases) { correction in
@@ -297,13 +291,9 @@ struct PrintEditorView: View {
 
     private var textInspector: some View {
         VStack(alignment: .leading, spacing: 12) {
-            TextEditor(text: selectedTextBinding)
-                .frame(minHeight: 96)
-                .focused($isTextInspectorFocused)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(Color.secondary.opacity(0.35))
-                }
+            TextField("Text", text: selectedTextBinding, axis: .vertical)
+                .lineLimit(3...8)
+                .textFieldStyle(.roundedBorder)
 
             VStack(alignment: .leading) {
                 Text("Font size: \(Int(selectedTextElement?.fontSize ?? 28))")
@@ -388,12 +378,6 @@ struct PrintEditorView: View {
                 y: CGFloat(frame.y + frame.height / 2)
             )
             .contentShape(Rectangle())
-            .onTapGesture(count: 2) {
-                selectedElementID = element.id
-                if case .text = element {
-                    focusTextInspector()
-                }
-            }
             .onTapGesture(count: 1) {
                 selectedElementID = element.id
             }
@@ -854,12 +838,6 @@ struct PrintEditorView: View {
         } catch {
             statusMessage = "Render failed: \(error.localizedDescription)"
             logger.log(.error, "print job build failed", metadata: ["error": error.localizedDescription])
-        }
-    }
-
-    private func focusTextInspector() {
-        DispatchQueue.main.async {
-            isTextInspectorFocused = true
         }
     }
 
