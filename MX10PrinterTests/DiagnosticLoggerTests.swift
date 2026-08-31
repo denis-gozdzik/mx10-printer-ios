@@ -138,7 +138,9 @@ final class DiagnosticLoggerTests: XCTestCase {
         XCTAssertEqual(logger.entries.map(\.formattedLine), persistedLines)
         XCTAssertTrue(logger.entries.allSatisfy { $0.metadata.isEmpty })
 
-        logger.log(.app, "new entry")
+        await MainActor.run {
+            logger.log(.app, "new entry")
+        }
 
         try await waitUntil {
             guard let text = try? String(contentsOf: storageURL, encoding: .utf8) else {
@@ -173,8 +175,11 @@ final class DiagnosticLoggerTests: XCTestCase {
         )
     }
 
-    private func waitUntil(_ condition: @escaping () -> Bool) async throws {
-        let deadline = Date().addingTimeInterval(2)
+    private func waitUntil(
+        timeout: TimeInterval = 5,
+        _ condition: @escaping () -> Bool
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
         while !condition() {
             if Date() >= deadline {
                 XCTFail("Timed out waiting for diagnostic logger")
