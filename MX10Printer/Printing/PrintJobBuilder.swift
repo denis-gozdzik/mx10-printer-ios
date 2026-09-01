@@ -23,6 +23,8 @@ enum PrintJobBuildError: LocalizedError, Equatable {
 }
 
 struct PrintJobBuilder {
+    static let bottomPrintMarginRows = 24
+
     var pageRenderer: PageRenderer
     var logger: DiagnosticLogger
 
@@ -78,20 +80,46 @@ struct PrintJobBuilder {
         preview: PrintPreview,
         preferences: PrintingPreferences
     ) -> PrintJob {
+        let printRows = trimmedRowsForPrinting(preview.rasterRows)
+        logger.log(
+            .raster,
+            "raster trim",
+            metadata: [
+                "document": document.id.uuidString,
+                "originalRows": preview.rasterRows.count,
+                "printRows": printRows.count,
+                "removedRows": preview.rasterRows.count - printRows.count,
+                "bottomMargin": Self.bottomPrintMarginRows
+            ]
+        )
         logger.log(
             .queue,
             "make print job",
             metadata: [
                 "document": document.id.uuidString,
-                "rows": preview.rasterRows.count,
+                "rows": printRows.count,
                 "bytesPerRow": BitmapRasterizer.rowByteCount
             ]
         )
         return PrintJob(
             documentID: document.id,
-            rows: preview.rasterRows,
+            rows: printRows,
             feedAfterPrintSteps: preferences.defaultFeedAfterPrint
         )
+    }
+
+    private func trimmedRowsForPrinting(_ rows: [Data]) -> [Data] {
+        guard let lastContentIndex = rows.lastIndex(where: { row in
+            row.contains { $0 != 0 }
+        }) else {
+            return rows
+        }
+
+        let printRowCount = min(
+            rows.count,
+            lastContentIndex + 1 + Self.bottomPrintMarginRows
+        )
+        return Array(rows.prefix(printRowCount))
     }
 
     private func validateImages(in document: PrintDocument) throws {
