@@ -64,6 +64,83 @@ final class PrintJobBuilderTests: XCTestCase {
         XCTAssertNotEqual(before.rasterRows, after.rasterRows)
     }
 
+    func testPrintJobTrimsTrailingWhiteRowsWithBottomMargin() throws {
+        let rows = makeRows(rowCount: 640, blackRows: [58])
+        let preview = try makePreview(rows: rows)
+        let builder = PrintJobBuilder(logger: makeLogger())
+
+        let job = builder.makeJob(
+            document: PrintDocument(title: "Short"),
+            preview: preview,
+            preferences: PrintingPreferences()
+        )
+
+        XCTAssertEqual(preview.rasterRows.count, 640)
+        XCTAssertEqual(job.rows.count, 83)
+    }
+
+    func testPrintJobKeepsFullRasterWhenBottomMarginWouldExceedPage() throws {
+        let rows = makeRows(rowCount: 640, blackRows: [630])
+        let preview = try makePreview(rows: rows)
+        let builder = PrintJobBuilder(logger: makeLogger())
+
+        let job = builder.makeJob(
+            document: PrintDocument(title: "Bottom"),
+            preview: preview,
+            preferences: PrintingPreferences()
+        )
+
+        XCTAssertEqual(preview.rasterRows.count, 640)
+        XCTAssertEqual(job.rows.count, 640)
+    }
+
+    func testPrintJobKeepsBlankRasterUnchanged() throws {
+        let rows = makeRows(rowCount: 640, blackRows: [])
+        let preview = try makePreview(rows: rows)
+        let builder = PrintJobBuilder(logger: makeLogger())
+
+        let job = builder.makeJob(
+            document: PrintDocument(title: "Blank"),
+            preview: preview,
+            preferences: PrintingPreferences()
+        )
+
+        XCTAssertEqual(preview.rasterRows.count, 640)
+        XCTAssertEqual(job.rows.count, 640)
+        XCTAssertEqual(job.rows, rows)
+    }
+
+    func testPrintJobDoesNotRemoveLeadingWhiteRows() throws {
+        let rows = makeRows(rowCount: 640, blackRows: [20])
+        let preview = try makePreview(rows: rows)
+        let builder = PrintJobBuilder(logger: makeLogger())
+
+        let job = builder.makeJob(
+            document: PrintDocument(title: "Leading"),
+            preview: preview,
+            preferences: PrintingPreferences()
+        )
+
+        XCTAssertEqual(job.rows.count, 45)
+        XCTAssertEqual(job.rows.prefix(20), rows.prefix(20))
+        XCTAssertTrue(job.rows.prefix(20).allSatisfy { $0 == whiteRow() })
+    }
+
+    func testPrintJobTrimmingOnlyRemovesTrailingRows() throws {
+        let rows = makeRows(rowCount: 640, blackRows: [2, 58])
+        let preview = try makePreview(rows: rows)
+        let builder = PrintJobBuilder(logger: makeLogger())
+
+        let job = builder.makeJob(
+            document: PrintDocument(title: "Contents"),
+            preview: preview,
+            preferences: PrintingPreferences()
+        )
+
+        XCTAssertEqual(job.rows.count, 83)
+        XCTAssertEqual(job.rows, Array(rows.prefix(83)))
+    }
+
     private func makeLogger() -> DiagnosticLogger {
         DiagnosticLogger(
             maxEntries: 100,
@@ -71,5 +148,31 @@ final class PrintJobBuilderTests: XCTestCase {
                 .appendingPathComponent(UUID().uuidString)
                 .appendingPathExtension("txt")
         )
+    }
+
+    private func makePreview(rows: [Data]) throws -> PrintPreview {
+        let image = try XCTUnwrap(BitmapRasterizer.previewImage(from: rows))
+        return PrintPreview(
+            renderedImage: image,
+            rasterRows: rows,
+            previewImage: image
+        )
+    }
+
+    private func makeRows(rowCount: Int, blackRows: Set<Int>) -> [Data] {
+        (0..<rowCount).map { rowIndex in
+            blackRows.contains(rowIndex) ? blackRow(rowIndex) : whiteRow()
+        }
+    }
+
+    private func whiteRow() -> Data {
+        Data(repeating: 0x00, count: BitmapRasterizer.rowByteCount)
+    }
+
+    private func blackRow(_ seed: Int) -> Data {
+        var row = Data(repeating: 0x00, count: BitmapRasterizer.rowByteCount)
+        row[0] = 0x80
+        row[1] = UInt8(seed & 0xFF)
+        return row
     }
 }
