@@ -63,6 +63,18 @@ struct PrintDocument: Identifiable, Codable, Equatable {
         return element.id
     }
 
+    mutating func addStickerElement(kind: StickerKind) -> UUID {
+        let element = StickerElement(
+            frame: PrintElementFrame(x: 132, y: 48, width: 120, height: 120),
+            kind: kind
+        )
+        var page = firstPage
+        page.elements.append(.sticker(element))
+        firstPage = page
+        touch()
+        return element.id
+    }
+
     mutating func updateElement(id: UUID, update: (inout PrintElement) -> Void) {
         guard let index = firstPage.elements.firstIndex(where: { $0.id == id }) else {
             return
@@ -184,16 +196,19 @@ struct NormalizedCropRect: Codable, Equatable {
 enum PrintElement: Identifiable, Codable, Equatable {
     case text(TextElement)
     case image(ImageElement)
+    case sticker(StickerElement)
 
     private enum CodingKeys: CodingKey {
         case type
         case text
         case image
+        case sticker
     }
 
     private enum ElementType: String, Codable {
         case text
         case image
+        case sticker
     }
 
     var id: UUID {
@@ -201,6 +216,8 @@ enum PrintElement: Identifiable, Codable, Equatable {
         case .text(let element):
             return element.id
         case .image(let element):
+            return element.id
+        case .sticker(let element):
             return element.id
         }
     }
@@ -212,6 +229,8 @@ enum PrintElement: Identifiable, Codable, Equatable {
                 return element.frame
             case .image(let element):
                 return element.frame
+            case .sticker(let element):
+                return element.frame
             }
         }
         set {
@@ -222,6 +241,9 @@ enum PrintElement: Identifiable, Codable, Equatable {
             case .image(var element):
                 element.frame = newValue
                 self = .image(element)
+            case .sticker(var element):
+                element.frame = newValue
+                self = .sticker(element)
             }
         }
     }
@@ -231,6 +253,8 @@ enum PrintElement: Identifiable, Codable, Equatable {
         case .text(let element):
             return element.rotationDegrees
         case .image(let element):
+            return element.rotationDegrees
+        case .sticker(let element):
             return element.rotationDegrees
         }
     }
@@ -245,6 +269,10 @@ enum PrintElement: Identifiable, Codable, Equatable {
             element.id = UUID()
             element.frame = element.frame.offsetBy(dx: 16, dy: 16)
             return .image(element)
+        case .sticker(var element):
+            element.id = UUID()
+            element.frame = element.frame.offsetBy(dx: 16, dy: 16)
+            return .sticker(element)
         }
     }
 
@@ -256,6 +284,8 @@ enum PrintElement: Identifiable, Codable, Equatable {
             self = .text(try container.decode(TextElement.self, forKey: .text))
         case .image:
             self = .image(try container.decode(ImageElement.self, forKey: .image))
+        case .sticker:
+            self = .sticker(try container.decode(StickerElement.self, forKey: .sticker))
         }
     }
 
@@ -268,6 +298,9 @@ enum PrintElement: Identifiable, Codable, Equatable {
         case .image(let element):
             try container.encode(ElementType.image, forKey: .type)
             try container.encode(element, forKey: .image)
+        case .sticker(let element):
+            try container.encode(ElementType.sticker, forKey: .type)
+            try container.encode(element, forKey: .sticker)
         }
     }
 }
@@ -328,6 +361,100 @@ struct ImageElement: Identifiable, Codable, Equatable {
         self.cropRect = cropRect
         self.rotationDegrees = rotationDegrees
         self.isInverted = isInverted
+    }
+}
+
+enum StickerKind: String, CaseIterable, Codable, Identifiable {
+    case heart
+    case star
+    case smile
+    case crown
+    case sparkles
+    case paw
+    case cat
+    case dog
+    case sun
+    case moon
+    case gift
+    case music
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .heart:
+            return "Heart"
+        case .star:
+            return "Star"
+        case .smile:
+            return "Smile"
+        case .crown:
+            return "Crown"
+        case .sparkles:
+            return "Sparkles"
+        case .paw:
+            return "Paw"
+        case .cat:
+            return "Cat"
+        case .dog:
+            return "Dog"
+        case .sun:
+            return "Sun"
+        case .moon:
+            return "Moon"
+        case .gift:
+            return "Gift"
+        case .music:
+            return "Music"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .heart:
+            return "heart.fill"
+        case .star:
+            return "star.fill"
+        case .smile:
+            return "face.smiling"
+        case .crown:
+            return "crown.fill"
+        case .sparkles:
+            return "sparkles"
+        case .paw:
+            return "pawprint.fill"
+        case .cat:
+            return "cat.fill"
+        case .dog:
+            return "dog.fill"
+        case .sun:
+            return "sun.max.fill"
+        case .moon:
+            return "moon.stars.fill"
+        case .gift:
+            return "gift.fill"
+        case .music:
+            return "music.note"
+        }
+    }
+}
+
+struct StickerElement: Identifiable, Codable, Equatable {
+    var id: UUID
+    var frame: PrintElementFrame
+    var kind: StickerKind
+    var rotationDegrees: Double
+
+    init(
+        id: UUID = UUID(),
+        frame: PrintElementFrame,
+        kind: StickerKind,
+        rotationDegrees: Double = 0
+    ) {
+        self.id = id
+        self.frame = frame
+        self.kind = kind
+        self.rotationDegrees = rotationDegrees
     }
 }
 

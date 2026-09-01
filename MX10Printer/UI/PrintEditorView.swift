@@ -18,6 +18,7 @@ struct PrintEditorView: View {
     @State private var moveStartFrames: [UUID: PrintElementFrame] = [:]
     @State private var resizeStartFrames: [UUID: PrintElementFrame] = [:]
     @State private var statusMessage: String?
+    @State private var isStickerPickerPresented = false
 
     private let logger = DiagnosticLogger.shared
     private let jobBuilder = PrintJobBuilder()
@@ -84,6 +85,14 @@ struct PrintEditorView: View {
 
             printQueue.failCurrentJob(reason: "Printer disconnected")
         }
+        .sheet(isPresented: $isStickerPickerPresented) {
+            StickerPickerSheet(
+                onSelect: addSticker(kind:),
+                onClose: {
+                    isStickerPickerPresented = false
+                }
+            )
+        }
     }
 
     private var titleEditor: some View {
@@ -107,6 +116,12 @@ struct PrintEditorView: View {
 
                 PhotosPicker(selection: $photoSelection, matching: .images) {
                     Label("Image", systemImage: "photo")
+                }
+
+                Button {
+                    isStickerPickerPresented = true
+                } label: {
+                    Label("Sticker", systemImage: "face.smiling")
                 }
 
                 Button {
@@ -233,6 +248,8 @@ struct PrintEditorView: View {
                     textInspector
                 case .image:
                     imageInspector
+                case .sticker:
+                    stickerInspector
                 }
 
                 HStack {
@@ -314,6 +331,35 @@ struct PrintEditorView: View {
         }
     }
 
+    private var stickerInspector: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(StickerKind.allCases) { kind in
+                        StickerKindButton(
+                            kind: kind,
+                            isSelected: selectedStickerElement?.kind == kind
+                        ) {
+                            updateSelectedSticker { stickerElement in
+                                stickerElement.kind = kind
+                            }
+                        }
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+
+            Button {
+                updateSelectedSticker { stickerElement in
+                    stickerElement.rotationDegrees = (stickerElement.rotationDegrees + 90).truncatingRemainder(dividingBy: 360)
+                }
+            } label: {
+                Label("Rotate 90", systemImage: "rotate.right")
+            }
+            .buttonStyle(.bordered)
+        }
+    }
+
     @ViewBuilder
     private func elementLayer(_ element: PrintElement) -> some View {
         let frame = element.frame
@@ -376,6 +422,22 @@ struct PrintEditorView: View {
                         Image(systemName: "photo")
                             .foregroundStyle(.secondary)
                     }
+            }
+
+        case .sticker(let stickerElement):
+            if let stickerImage = StickerRenderer.image(
+                for: stickerElement.kind,
+                pointSize: CGFloat(max(stickerElement.frame.width, stickerElement.frame.height))
+            ) {
+                Image(uiImage: stickerImage)
+                    .renderingMode(.original)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            } else {
+                Image(systemName: "questionmark")
+                    .foregroundStyle(.black)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             }
         }
     }
@@ -523,6 +585,14 @@ struct PrintEditorView: View {
         return element
     }
 
+    private var selectedStickerElement: StickerElement? {
+        guard case .sticker(let element) = selectedElement else {
+            return nil
+        }
+
+        return element
+    }
+
     private var selectedImageContentModeBinding: Binding<PrintImageContentMode> {
         Binding(
             get: { selectedImageElement?.contentMode ?? .fit },
@@ -597,6 +667,22 @@ struct PrintEditorView: View {
         }
     }
 
+    private func addSticker(kind: StickerKind) {
+        let elementID = document.addStickerElement(kind: kind)
+        selectedElementID = elementID
+        saveDocument()
+        refreshPreview()
+        isStickerPickerPresented = false
+        logger.log(
+            .editor,
+            "sticker element added",
+            metadata: [
+                "element": elementID.uuidString,
+                "kind": kind.rawValue
+            ]
+        )
+    }
+
     private func updateSelectedText(_ update: (inout TextElement) -> Void) {
         guard let selectedElementID else {
             return
@@ -625,6 +711,21 @@ struct PrintEditorView: View {
             update(&imageElement)
             imageElement.cropRect = imageElement.cropRect.clamped()
             element = .image(imageElement)
+        }
+    }
+
+    private func updateSelectedSticker(_ update: (inout StickerElement) -> Void) {
+        guard let selectedElementID else {
+            return
+        }
+
+        updateElement(id: selectedElementID) { element in
+            guard case .sticker(var stickerElement) = element else {
+                return
+            }
+
+            update(&stickerElement)
+            element = .sticker(stickerElement)
         }
     }
 
@@ -790,6 +891,87 @@ private extension PrintImageContentMode {
             return .fit
         case .fill:
             return .fill
+        }
+    }
+}
+
+private struct StickerPickerSheet: View {
+    let onSelect: (StickerKind) -> Void
+    let onClose: () -> Void
+
+    private let columns = Array(
+        repeating: GridItem(.flexible(), spacing: 12),
+        count: 3
+    )
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 12) {
+                    ForEach(StickerKind.allCases) { kind in
+                        StickerKindButton(kind: kind, isSelected: false) {
+                            onSelect(kind)
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                }
+                .padding()
+            }
+            .navigationTitle("Sticker")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") {
+                        onClose()
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct StickerKindButton: View {
+    let kind: StickerKind
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                StickerSymbolView(kind: kind, pointSize: 44)
+                    .frame(width: 54, height: 48)
+
+                Text(kind.title)
+                    .font(.caption)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+            .frame(width: 86, height: 82)
+            .background(isSelected ? Color.accentColor.opacity(0.14) : Color(.secondarySystemBackground))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(isSelected ? Color.accentColor : Color.secondary.opacity(0.35), lineWidth: isSelected ? 2 : 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(kind.title)
+    }
+}
+
+private struct StickerSymbolView: View {
+    let kind: StickerKind
+    let pointSize: CGFloat
+
+    var body: some View {
+        if let image = StickerRenderer.image(for: kind, pointSize: pointSize) {
+            Image(uiImage: image)
+                .renderingMode(.original)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+        } else {
+            Image(systemName: "questionmark")
+                .foregroundStyle(.black)
         }
     }
 }

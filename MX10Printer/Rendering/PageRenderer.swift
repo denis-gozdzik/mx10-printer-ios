@@ -70,6 +70,8 @@ struct PageRenderer {
             render(textElement: textElement, in: context)
         case .image(let imageElement):
             render(imageElement: imageElement, in: context)
+        case .sticker(let stickerElement):
+            render(stickerElement: stickerElement, in: context)
         }
     }
 
@@ -145,6 +147,43 @@ struct PageRenderer {
         image.draw(in: drawRect)
 
         context.restoreGState()
+    }
+
+    private func render(stickerElement: StickerElement, in context: CGContext) {
+        let rect = stickerElement.frame.cgRect
+
+        context.saveGState()
+        applyRotation(stickerElement.rotationDegrees, around: rect, in: context)
+        context.clip(to: rect)
+        context.interpolationQuality = .none
+
+        guard let drawRect = StickerRenderer.draw(kind: stickerElement.kind, in: rect) else {
+            context.restoreGState()
+            logger.log(
+                .error,
+                "render sticker skipped",
+                metadata: [
+                    "element": stickerElement.id.uuidString,
+                    "kind": stickerElement.kind.rawValue,
+                    "symbol": stickerElement.kind.symbolName
+                ]
+            )
+            return
+        }
+
+        context.restoreGState()
+        logger.log(
+            .render,
+            "render sticker element",
+            metadata: [
+                "element": stickerElement.id.uuidString,
+                "kind": stickerElement.kind.rawValue,
+                "symbol": stickerElement.kind.symbolName,
+                "frame": rect.diagnosticDescription,
+                "drawRect": drawRect.diagnosticDescription,
+                "rotation": stickerElement.rotationDegrees
+            ]
+        )
     }
 
     private func preparedImage(from imageElement: ImageElement) -> UIImage? {
