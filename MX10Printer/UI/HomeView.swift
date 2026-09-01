@@ -56,38 +56,72 @@ struct HomeView: View {
             }
 
             Section("Templates") {
-                Button {
-                    onNewPrint()
-                } label: {
-                    Label("Blank 384 px page", systemImage: "doc")
-                }
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible(), spacing: 12),
+                        GridItem(.flexible(), spacing: 12)
+                    ],
+                    spacing: 12
+                ) {
+                    Button {
+                        onNewPrint()
+                    } label: {
+                        TemplateCard(
+                            title: "Blank",
+                            subtitle: "Pusta strona 384 px",
+                            systemImageName: "doc"
+                        )
+                    }
+                    .buttonStyle(.plain)
 
-                Button {
-                    onOpenDocument(labelTemplate())
-                } label: {
-                    Label("Simple label", systemImage: "tag")
+                    ForEach(PrintTemplateKind.allCases) { template in
+                        Button {
+                            onOpenDocument(template.makeDocument())
+                        } label: {
+                            TemplateCard(
+                                title: template.title,
+                                subtitle: template.subtitle,
+                                systemImageName: template.systemImageName
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
+                .padding(.vertical, 4)
             }
         }
     }
+}
 
-    private func labelTemplate() -> PrintDocument {
-        let text = TextElement(
-            frame: PrintElementFrame(x: 24, y: 40, width: 336, height: 120),
-            text: "MX10\nLabel",
-            fontSize: 34,
-            isBold: true,
-            alignment: .center
-        )
+private struct TemplateCard: View {
+    let title: String
+    let subtitle: String
+    let systemImageName: String
 
-        return PrintDocument(
-            title: "Simple label",
-            pages: [
-                PrintPage(
-                    height: 240,
-                    elements: [.text(text)]
-                )
-            ]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Image(systemName: systemImageName)
+                .font(.system(size: 30, weight: .semibold))
+                .frame(height: 34)
+                .foregroundStyle(.primary)
+
+            Text(title)
+                .font(.headline)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+
+            Text(subtitle)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, minHeight: 112, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(.secondarySystemGroupedBackground))
         )
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
