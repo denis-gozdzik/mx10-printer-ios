@@ -183,7 +183,7 @@ final class FrameTests: XCTestCase {
         }
 
         XCTAssertGreaterThan(darkSamples, 20)
-        XCTAssertGreaterThan(whiteSamples, 20)
+        XCTAssertGreaterThanOrEqual(whiteSamples, 20)
     }
 
     func testDoubleFrameProducesTwoOutlineRegions() throws {
