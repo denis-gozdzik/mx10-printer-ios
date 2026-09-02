@@ -65,7 +65,7 @@ final class EditorCanvasLayoutTests: XCTestCase {
     func testInvalidAvailableDimensionsFailSafely() {
         let layout = EditorCanvasLayout(
             pageSize: CGSize(width: 384, height: 640),
-            availableSize: CGSize(width: 0, height: .infinity)
+            availableSize: CGSize(width: 0, height: CGFloat.infinity)
         )
         let translation = EditorCanvasLayout.documentTranslation(
             displayTranslation: CGSize(width: 20, height: 20),
@@ -73,7 +73,7 @@ final class EditorCanvasLayoutTests: XCTestCase {
         )
 
         XCTAssertEqual(layout.scale, 0)
-        XCTAssertEqual(layout.displaySize, .zero)
-        XCTAssertEqual(translation, .zero)
+        XCTAssertEqual(layout.displaySize, CGSize.zero)
+        XCTAssertEqual(translation, CGSize.zero)
     }
 }
