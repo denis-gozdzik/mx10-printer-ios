@@ -23,6 +23,7 @@ struct PrintEditorView: View {
 
     private let logger = DiagnosticLogger.shared
     private let jobBuilder = PrintJobBuilder()
+    private let canvasMargin: CGFloat = 12
 
     init(
         document: PrintDocument,
@@ -40,26 +41,18 @@ struct PrintEditorView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    titleEditor
-                    editorToolbar
-                    queueStatus
-                    canvas
-                    elementInspector
+            GeometryReader { geometry in
+                VStack(spacing: 0) {
+                    editorHeader
+                    editorCanvasArea
+                    bottomDock
                 }
-                .padding()
+                .frame(width: geometry.size.width, height: geometry.size.height)
+                .background(Color(.systemGroupedBackground))
             }
             .navigationTitle("Print Editor")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") {
-                        saveDocument()
-                        dismiss()
-                    }
-                }
-
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") {
                         saveDocument()
@@ -104,72 +97,27 @@ struct PrintEditorView: View {
         }
     }
 
-    private var titleEditor: some View {
-        TextField("Document title", text: titleBinding)
-            .textFieldStyle(.roundedBorder)
-            .font(.headline)
-    }
+    private var editorHeader: some View {
+        HStack(spacing: 10) {
+            TextField("Document title", text: titleBinding)
+                .textFieldStyle(.roundedBorder)
+                .font(.headline)
 
-    private var editorToolbar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                Button {
-                    let elementID = document.addTextElement()
-                    selectedElementID = elementID
-                    logger.log(.editor, "text element added", metadata: ["element": elementID.uuidString])
-                    saveDocument()
-                    refreshPreview()
-                } label: {
-                    Label("Text", systemImage: "textformat")
-                }
-
-                PhotosPicker(selection: $photoSelection, matching: .images) {
-                    Label("Image", systemImage: "photo")
-                }
-
-                Button {
-                    isStickerPickerPresented = true
-                } label: {
-                    Label("Sticker", systemImage: "face.smiling")
-                }
-
-                Button {
-                    isFramePickerPresented = true
-                } label: {
-                    Label("Frame", systemImage: "rectangle")
-                }
-
-                Button {
-                    isPreviewMode.toggle()
-                    refreshPreview()
-                } label: {
-                    Label(isPreviewMode ? "Edit" : "Preview", systemImage: isPreviewMode ? "rectangle.and.pencil.and.ellipsis" : "eye")
-                }
-
-                Button {
-                    printCurrentDocument()
-                } label: {
-                    Label("Print", systemImage: "printer")
-                }
-                .disabled(printUnavailableReason != nil)
-
-                if printQueue.isPrinting {
-                    Button(role: .destructive) {
-                        dismissEditorKeyboard()
-                        printQueue.cancelCurrentJob()
-                    } label: {
-                        Label("Cancel", systemImage: "xmark.circle")
-                    }
-                }
+            Button {
+                isPreviewMode.toggle()
+                refreshPreview()
+            } label: {
+                Label(isPreviewMode ? "Edit" : "Preview", systemImage: isPreviewMode ? "rectangle.and.pencil.and.ellipsis" : "eye")
             }
             .buttonStyle(.bordered)
-            .labelStyle(.titleAndIcon)
-            .controlSize(.regular)
             .lineLimit(1)
-            .fixedSize(horizontal: true, vertical: false)
-            .padding(.vertical, 2)
         }
-        .scrollIndicators(.hidden)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(.bar)
+        .overlay(alignment: .bottom) {
+            Divider()
+        }
     }
 
     private func dismissEditorKeyboard() {
@@ -181,108 +129,275 @@ struct PrintEditorView: View {
         )
     }
 
-    private var queueStatus: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(printQueue.currentStatusText)
-                .font(.headline)
+    private var editorCanvasArea: some View {
+        ZStack(alignment: .bottom) {
+            fittedCanvas
 
-            if printQueue.isPrinting {
-                ProgressView(value: printQueue.progressFraction)
+            if let selectedElement {
+                inspectorPanel(for: selectedElement)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, statusBannerMessage == nil ? 10 : 58)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
-            if let reason = printUnavailableReason {
-                Text(reason)
-                    .foregroundStyle(.secondary)
-            }
-
-            if let failure = printQueue.failedJobs.last {
-                Text("Last failure: \(failure.message)")
-                    .foregroundStyle(.red)
-            } else if let statusMessage {
-                Text(statusMessage)
-                    .foregroundStyle(.secondary)
-            }
+            statusBanner
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
         }
-        .font(.subheadline)
-    }
-
-    private var canvas: some View {
-        ScrollView([.horizontal, .vertical]) {
-            ZStack(alignment: .topLeading) {
-                Color.white
-
-                if isPreviewMode {
-                    if let previewImage = selectedPreviewImage {
-                        Image(decorative: previewImage, scale: 1)
-                            .interpolation(.none)
-                            .resizable()
-                            .frame(
-                                width: CGFloat(PrintDocument.pageWidth),
-                                height: CGFloat(previewImage.height)
-                            )
-                    } else {
-                        Text("Preview unavailable")
-                            .foregroundStyle(.secondary)
-                            .frame(
-                                width: CGFloat(PrintDocument.pageWidth),
-                                height: CGFloat(document.firstPage.height)
-                            )
-                    }
-                } else {
-                    ForEach(document.firstPage.elements) { element in
-                        elementLayer(element)
-                    }
-                }
-            }
-            .frame(
-                width: CGFloat(PrintDocument.pageWidth),
-                height: CGFloat(document.firstPage.height)
-            )
-            .background(Color.white)
-            .overlay {
-                Rectangle()
-                    .stroke(Color.secondary, lineWidth: 1)
-            }
-            .onTapGesture {
-                selectedElementID = nil
-            }
-        }
-        .frame(maxHeight: 520)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(.secondarySystemBackground))
     }
 
+    private var statusBannerMessage: String? {
+        if printQueue.isPrinting {
+            return "Printing..."
+        }
+
+        if let failure = printQueue.failedJobs.last {
+            return "Last failure: \(failure.message)"
+        }
+
+        if let statusMessage {
+            return statusMessage
+        }
+
+        return printUnavailableReason
+    }
+
     @ViewBuilder
-    private var elementInspector: some View {
-        if let selectedElement {
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Selected element")
+    private var statusBanner: some View {
+        if let message = statusBannerMessage {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(message)
+                    .font(.subheadline.weight(printQueue.isPrinting ? .semibold : .regular))
+                    .foregroundStyle(statusMessageColor)
+
+                if printQueue.isPrinting {
+                    ProgressView(value: printQueue.progressFraction)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.regularMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .shadow(color: Color.black.opacity(0.08), radius: 8, y: 2)
+        }
+    }
+
+    private var statusMessageColor: Color {
+        if printQueue.failedJobs.last != nil {
+            return .red
+        }
+
+        return .secondary
+    }
+
+    private var fittedCanvas: some View {
+        GeometryReader { geometry in
+            let availableSize = CGSize(
+                width: max(0, geometry.size.width - canvasMargin * 2),
+                height: max(0, geometry.size.height - canvasMargin * 2)
+            )
+            let layout = EditorCanvasLayout(pageSize: pageSize, availableSize: availableSize)
+
+            ZStack {
+                if layout.scale > 0 {
+                    pageCanvas(canvasScale: layout.scale)
+                        .frame(width: layout.displaySize.width, height: layout.displaySize.height, alignment: .topLeading)
+                        .clipped()
+                } else {
+                    Text("Preview unavailable")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(canvasMargin)
+        }
+    }
+
+    private var pageSize: CGSize {
+        CGSize(
+            width: CGFloat(PrintDocument.pageWidth),
+            height: CGFloat(document.firstPage.height)
+        )
+    }
+
+    private func pageCanvas(canvasScale: CGFloat) -> some View {
+        ZStack(alignment: .topLeading) {
+            Color.white
+
+            if isPreviewMode {
+                if let previewImage = selectedPreviewImage {
+                    Image(decorative: previewImage, scale: 1)
+                        .interpolation(.none)
+                        .resizable()
+                        .frame(width: pageSize.width, height: pageSize.height)
+                } else {
+                    Text("Preview unavailable")
+                        .foregroundStyle(.secondary)
+                        .frame(width: pageSize.width, height: pageSize.height)
+                }
+            } else {
+                ForEach(document.firstPage.elements) { element in
+                    elementLayer(element, canvasScale: canvasScale)
+                }
+            }
+        }
+        .frame(width: pageSize.width, height: pageSize.height)
+        .background(Color.white)
+        .overlay {
+            Rectangle()
+                .stroke(Color.secondary, lineWidth: 1)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            selectedElementID = nil
+            dismissEditorKeyboard()
+        }
+        .scaleEffect(canvasScale, anchor: .topLeading)
+    }
+
+    private var bottomDock: some View {
+        HStack(spacing: 8) {
+            Button {
+                addText()
+            } label: {
+                DockToolLabel(title: "Text", systemImageName: "textformat")
+            }
+            .buttonStyle(.plain)
+
+            PhotosPicker(selection: $photoSelection, matching: .images) {
+                DockToolLabel(title: "Image", systemImageName: "photo")
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                isStickerPickerPresented = true
+            } label: {
+                DockToolLabel(title: "Sticker", systemImageName: "face.smiling")
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                isFramePickerPresented = true
+            } label: {
+                DockToolLabel(title: "Frame", systemImageName: "rectangle")
+            }
+            .buttonStyle(.plain)
+
+            if printQueue.isPrinting {
+                Button(role: .destructive) {
+                    dismissEditorKeyboard()
+                    printQueue.cancelCurrentJob()
+                } label: {
+                    DockToolLabel(title: "Cancel", systemImageName: "xmark.circle.fill", isProminent: true, isDestructive: true)
+                }
+                .buttonStyle(.plain)
+            } else {
+                Button {
+                    printCurrentDocument()
+                } label: {
+                    DockToolLabel(title: "Print", systemImageName: "printer.fill", isProminent: true)
+                }
+                .buttonStyle(.plain)
+                .disabled(printUnavailableReason != nil)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(.bar)
+        .overlay(alignment: .top) {
+            Divider()
+        }
+    }
+
+    private func inspectorPanel(for selectedElement: PrintElement) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label(elementTitle(for: selectedElement), systemImage: elementIconName(for: selectedElement))
                     .font(.headline)
 
-                switch selectedElement {
-                case .text:
-                    textInspector
-                case .image:
-                    imageInspector
-                case .sticker:
-                    stickerInspector
-                case .frame:
-                    frameInspector
-                }
+                Spacer()
 
-                HStack {
-                    Button("Duplicate") {
-                        duplicateSelectedElement()
-                    }
-
-                    Button("Delete", role: .destructive) {
-                        deleteSelectedElement()
-                    }
+                Button {
+                    selectedElementID = nil
+                    dismissEditorKeyboard()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .imageScale(.large)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close inspector")
             }
-        } else {
-            Text("No element selected")
-                .foregroundStyle(.secondary)
+
+            ScrollView(.vertical, showsIndicators: false) {
+                inspectorControls(for: selectedElement)
+                    .padding(.bottom, 2)
+            }
+            .frame(maxHeight: 178)
+
+            HStack {
+                Button {
+                    duplicateSelectedElement()
+                } label: {
+                    Label("Duplicate", systemImage: "plus.square.on.square")
+                }
+
+                Spacer()
+
+                Button(role: .destructive) {
+                    deleteSelectedElement()
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
+            .buttonStyle(.bordered)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, maxHeight: 280, alignment: .top)
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .shadow(color: Color.black.opacity(0.12), radius: 14, y: 4)
+    }
+
+    @ViewBuilder
+    private func inspectorControls(for selectedElement: PrintElement) -> some View {
+        switch selectedElement {
+        case .text:
+            textInspector
+        case .image:
+            imageInspector
+        case .sticker:
+            stickerInspector
+        case .frame:
+            frameInspector
+        }
+    }
+
+    private func elementTitle(for element: PrintElement) -> String {
+        switch element {
+        case .text:
+            return "Text"
+        case .image:
+            return "Image"
+        case .sticker:
+            return "Sticker"
+        case .frame:
+            return "Frame"
+        }
+    }
+
+    private func elementIconName(for element: PrintElement) -> String {
+        switch element {
+        case .text:
+            return "textformat"
+        case .image:
+            return "photo"
+        case .sticker:
+            return "face.smiling"
+        case .frame:
+            return "rectangle"
         }
     }
 
@@ -325,7 +440,7 @@ struct PrintEditorView: View {
 
             Toggle("Invert", isOn: selectedImageInvertBinding)
 
-            HStack {
+            LazyVGrid(columns: inspectorButtonColumns, spacing: 8) {
                 Button("Rotate 90") {
                     updateSelectedImage { imageElement in
                         imageElement.rotationDegrees = (imageElement.rotationDegrees + 90).truncatingRemainder(dividingBy: 360)
@@ -350,20 +465,17 @@ struct PrintEditorView: View {
 
     private var stickerInspector: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(StickerKind.allCases) { kind in
-                        StickerKindButton(
-                            kind: kind,
-                            isSelected: selectedStickerElement?.kind == kind
-                        ) {
-                            updateSelectedSticker { stickerElement in
-                                stickerElement.kind = kind
-                            }
+            LazyVGrid(columns: stickerInspectorColumns, spacing: 6) {
+                ForEach(StickerKind.allCases) { kind in
+                    CompactStickerKindButton(
+                        kind: kind,
+                        isSelected: selectedStickerElement?.kind == kind
+                    ) {
+                        updateSelectedSticker { stickerElement in
+                            stickerElement.kind = kind
                         }
                     }
                 }
-                .padding(.vertical, 2)
             }
 
             Button {
@@ -379,21 +491,18 @@ struct PrintEditorView: View {
 
     private var frameInspector: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(FrameKind.allCases) { kind in
-                        FrameKindButton(
-                            kind: kind,
-                            lineWidth: selectedFrameElement?.lineWidth ?? 3,
-                            isSelected: selectedFrameElement?.kind == kind
-                        ) {
-                            updateSelectedFrame { frameElement in
-                                frameElement.kind = kind
-                            }
+            LazyVGrid(columns: frameInspectorColumns, spacing: 6) {
+                ForEach(FrameKind.allCases) { kind in
+                    CompactFrameKindButton(
+                        kind: kind,
+                        lineWidth: selectedFrameElement?.lineWidth ?? 3,
+                        isSelected: selectedFrameElement?.kind == kind
+                    ) {
+                        updateSelectedFrame { frameElement in
+                            frameElement.kind = kind
                         }
                     }
                 }
-                .padding(.vertical, 2)
             }
 
             VStack(alignment: .leading) {
@@ -412,8 +521,25 @@ struct PrintEditorView: View {
         }
     }
 
+    private var inspectorButtonColumns: [GridItem] {
+        [
+            GridItem(.flexible(), spacing: 8),
+            GridItem(.flexible(), spacing: 8),
+            GridItem(.flexible(), spacing: 8)
+        ]
+    }
+
+    private var stickerInspectorColumns: [GridItem] {
+        Array(repeating: GridItem(.flexible(), spacing: 4), count: 6)
+    }
+
+    private var frameInspectorColumns: [GridItem] {
+        Array(repeating: GridItem(.flexible(), spacing: 4), count: 5)
+    }
+
+
     @ViewBuilder
-    private func elementLayer(_ element: PrintElement) -> some View {
+    private func elementLayer(_ element: PrintElement, canvasScale: CGFloat) -> some View {
         let frame = element.frame
         let isSelected = selectedElementID == element.id
 
@@ -428,8 +554,8 @@ struct PrintEditorView: View {
                 if isSelected {
                     Rectangle()
                         .fill(Color.accentColor)
-                        .frame(width: 18, height: 18)
-                        .gesture(resizeGesture(for: element.id))
+                        .frame(width: 26, height: 26)
+                        .gesture(resizeGesture(for: element.id, canvasScale: canvasScale))
                 }
             }
             .rotationEffect(.degrees(element.rotationDegrees))
@@ -441,7 +567,7 @@ struct PrintEditorView: View {
             .onTapGesture(count: 1) {
                 selectedElementID = element.id
             }
-            .gesture(moveGesture(for: element.id))
+            .gesture(moveGesture(for: element.id, canvasScale: canvasScale))
     }
 
     @ViewBuilder
@@ -497,7 +623,7 @@ struct PrintEditorView: View {
         }
     }
 
-    private func moveGesture(for elementID: UUID) -> some Gesture {
+    private func moveGesture(for elementID: UUID, canvasScale: CGFloat) -> some Gesture {
         DragGesture()
             .onChanged { value in
                 if moveStartFrames[elementID] == nil {
@@ -509,9 +635,13 @@ struct PrintEditorView: View {
                     return
                 }
 
+                let documentTranslation = EditorCanvasLayout.documentTranslation(
+                    displayTranslation: value.translation,
+                    scale: canvasScale
+                )
                 let updatedFrame = startFrame.offsetBy(
-                    dx: Double(value.translation.width),
-                    dy: Double(value.translation.height)
+                    dx: Double(documentTranslation.width),
+                    dy: Double(documentTranslation.height)
                 )
                 updateElement(id: elementID, persist: false) { element in
                     element.frame = updatedFrame
@@ -524,7 +654,7 @@ struct PrintEditorView: View {
             }
     }
 
-    private func resizeGesture(for elementID: UUID) -> some Gesture {
+    private func resizeGesture(for elementID: UUID, canvasScale: CGFloat) -> some Gesture {
         DragGesture()
             .onChanged { value in
                 if resizeStartFrames[elementID] == nil {
@@ -536,9 +666,13 @@ struct PrintEditorView: View {
                     return
                 }
 
+                let documentTranslation = EditorCanvasLayout.documentTranslation(
+                    displayTranslation: value.translation,
+                    scale: canvasScale
+                )
                 let updatedFrame = startFrame.resizedBy(
-                    dw: Double(value.translation.width),
-                    dh: Double(value.translation.height)
+                    dw: Double(documentTranslation.width),
+                    dh: Double(documentTranslation.height)
                 )
                 updateElement(id: elementID, persist: false) { element in
                     element.frame = updatedFrame
@@ -687,6 +821,14 @@ struct PrintEditorView: View {
                 }
             }
         )
+    }
+
+    private func addText() {
+        let elementID = document.addTextElement()
+        selectedElementID = elementID
+        logger.log(.editor, "text element added", metadata: ["element": elementID.uuidString])
+        saveDocument()
+        refreshPreview()
     }
 
     private func addImage(from item: PhotosPickerItem?) async {
@@ -997,6 +1139,98 @@ private extension PrintImageContentMode {
         case .fill:
             return .fill
         }
+    }
+}
+
+private struct DockToolLabel: View {
+    @Environment(\.isEnabled) private var isEnabled
+
+    let title: String
+    let systemImageName: String
+    var isProminent = false
+    var isDestructive = false
+
+    var body: some View {
+        VStack(spacing: 3) {
+            Image(systemName: systemImageName)
+                .font(.system(size: isProminent ? 21 : 19, weight: .semibold))
+
+            Text(title)
+                .font(.caption2.weight(isProminent ? .semibold : .regular))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+        .frame(maxWidth: .infinity, minHeight: 54)
+        .foregroundStyle(foregroundColor)
+        .background(background)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(borderColor, lineWidth: isProminent ? 0 : 1)
+        }
+        .opacity(isEnabled ? 1 : 0.45)
+        .accessibilityLabel(title)
+    }
+
+    private var foregroundColor: Color {
+        isProminent ? .white : .primary
+    }
+
+    private var background: Color {
+        if isProminent {
+            return isDestructive ? .red : .accentColor
+        }
+
+        return Color(.secondarySystemBackground)
+    }
+
+    private var borderColor: Color {
+        Color.secondary.opacity(0.3)
+    }
+}
+
+private struct CompactStickerKindButton: View {
+    let kind: StickerKind
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            StickerSymbolView(kind: kind, pointSize: 24)
+                .padding(6)
+                .frame(maxWidth: .infinity, minHeight: 38)
+                .background(isSelected ? Color.accentColor.opacity(0.16) : Color(.secondarySystemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(isSelected ? Color.accentColor : Color.secondary.opacity(0.3), lineWidth: isSelected ? 2 : 1)
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(kind.title)
+    }
+}
+
+private struct CompactFrameKindButton: View {
+    let kind: FrameKind
+    let lineWidth: Double
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            FrameStylePreview(kind: kind, lineWidth: lineWidth)
+                .padding(5)
+                .frame(maxWidth: .infinity, minHeight: 38)
+                .background(isSelected ? Color.accentColor.opacity(0.16) : Color(.secondarySystemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(isSelected ? Color.accentColor : Color.secondary.opacity(0.3), lineWidth: isSelected ? 2 : 1)
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(kind.title)
     }
 }
 
