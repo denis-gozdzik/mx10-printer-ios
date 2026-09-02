@@ -19,6 +19,7 @@ struct PrintEditorView: View {
     @State private var resizeStartFrames: [UUID: PrintElementFrame] = [:]
     @State private var statusMessage: String?
     @State private var isStickerPickerPresented = false
+    @State private var isFramePickerPresented = false
 
     private let logger = DiagnosticLogger.shared
     private let jobBuilder = PrintJobBuilder()
@@ -93,6 +94,14 @@ struct PrintEditorView: View {
                 }
             )
         }
+        .sheet(isPresented: $isFramePickerPresented) {
+            FramePickerSheet(
+                onSelect: addFrame(kind:),
+                onClose: {
+                    isFramePickerPresented = false
+                }
+            )
+        }
     }
 
     private var titleEditor: some View {
@@ -122,6 +131,12 @@ struct PrintEditorView: View {
                     isStickerPickerPresented = true
                 } label: {
                     Label("Sticker", systemImage: "face.smiling")
+                }
+
+                Button {
+                    isFramePickerPresented = true
+                } label: {
+                    Label("Frame", systemImage: "rectangle")
                 }
 
                 Button {
@@ -250,6 +265,8 @@ struct PrintEditorView: View {
                     imageInspector
                 case .sticker:
                     stickerInspector
+                case .frame:
+                    frameInspector
                 }
 
                 HStack {
@@ -360,6 +377,41 @@ struct PrintEditorView: View {
         }
     }
 
+    private var frameInspector: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(FrameKind.allCases) { kind in
+                        FrameKindButton(
+                            kind: kind,
+                            lineWidth: selectedFrameElement?.lineWidth ?? 3,
+                            isSelected: selectedFrameElement?.kind == kind
+                        ) {
+                            updateSelectedFrame { frameElement in
+                                frameElement.kind = kind
+                            }
+                        }
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+
+            VStack(alignment: .leading) {
+                Text("Thickness: \(Int(selectedFrameElement?.lineWidth ?? 3))")
+                Slider(value: selectedFrameLineWidthBinding, in: 1...8, step: 1)
+            }
+
+            Button {
+                updateSelectedFrame { frameElement in
+                    frameElement.rotationDegrees = (frameElement.rotationDegrees + 90).truncatingRemainder(dividingBy: 360)
+                }
+            } label: {
+                Label("Rotate 90", systemImage: "rotate.right")
+            }
+            .buttonStyle(.bordered)
+        }
+    }
+
     @ViewBuilder
     private func elementLayer(_ element: PrintElement) -> some View {
         let frame = element.frame
@@ -439,6 +491,9 @@ struct PrintEditorView: View {
                     .foregroundStyle(.black)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             }
+
+        case .frame(let frameElement):
+            FrameElementView(element: frameElement)
         }
     }
 
@@ -593,6 +648,14 @@ struct PrintEditorView: View {
         return element
     }
 
+    private var selectedFrameElement: FrameElement? {
+        guard case .frame(let element) = selectedElement else {
+            return nil
+        }
+
+        return element
+    }
+
     private var selectedImageContentModeBinding: Binding<PrintImageContentMode> {
         Binding(
             get: { selectedImageElement?.contentMode ?? .fit },
@@ -610,6 +673,17 @@ struct PrintEditorView: View {
             set: { isInverted in
                 updateSelectedImage { imageElement in
                     imageElement.isInverted = isInverted
+                }
+            }
+        )
+    }
+
+    private var selectedFrameLineWidthBinding: Binding<Double> {
+        Binding(
+            get: { selectedFrameElement?.lineWidth ?? 3 },
+            set: { lineWidth in
+                updateSelectedFrame { frameElement in
+                    frameElement.lineWidth = lineWidth.rounded()
                 }
             }
         )
@@ -683,6 +757,22 @@ struct PrintEditorView: View {
         )
     }
 
+    private func addFrame(kind: FrameKind) {
+        let elementID = document.addFrameElement(kind: kind)
+        selectedElementID = elementID
+        saveDocument()
+        refreshPreview()
+        isFramePickerPresented = false
+        logger.log(
+            .editor,
+            "frame element added",
+            metadata: [
+                "element": elementID.uuidString,
+                "kind": kind.rawValue
+            ]
+        )
+    }
+
     private func updateSelectedText(_ update: (inout TextElement) -> Void) {
         guard let selectedElementID else {
             return
@@ -726,6 +816,21 @@ struct PrintEditorView: View {
 
             update(&stickerElement)
             element = .sticker(stickerElement)
+        }
+    }
+
+    private func updateSelectedFrame(_ update: (inout FrameElement) -> Void) {
+        guard let selectedElementID else {
+            return
+        }
+
+        updateElement(id: selectedElementID) { element in
+            guard case .frame(var frameElement) = element else {
+                return
+            }
+
+            update(&frameElement)
+            element = .frame(frameElement)
         }
     }
 
@@ -892,6 +997,135 @@ private extension PrintImageContentMode {
         case .fill:
             return .fill
         }
+    }
+}
+
+private struct FramePickerSheet: View {
+    let onSelect: (FrameKind) -> Void
+    let onClose: () -> Void
+
+    private let columns = Array(
+        repeating: GridItem(.flexible(), spacing: 12),
+        count: 3
+    )
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 12) {
+                    ForEach(FrameKind.allCases) { kind in
+                        FrameKindButton(kind: kind, lineWidth: 3, isSelected: false) {
+                            onSelect(kind)
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                }
+                .padding()
+            }
+            .navigationTitle("Frame")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") {
+                        onClose()
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct FrameKindButton: View {
+    let kind: FrameKind
+    let lineWidth: Double
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                FrameStylePreview(kind: kind, lineWidth: lineWidth)
+                    .frame(width: 64, height: 44)
+
+                Text(kind.title)
+                    .font(.caption)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+            .frame(width: 96, height: 82)
+            .background(isSelected ? Color.accentColor.opacity(0.14) : Color(.secondarySystemBackground))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(isSelected ? Color.accentColor : Color.secondary.opacity(0.35), lineWidth: isSelected ? 2 : 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(kind.title)
+    }
+}
+
+private struct FrameElementView: View {
+    let element: FrameElement
+
+    var body: some View {
+        FrameStylePreview(kind: element.kind, lineWidth: element.lineWidth)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct FrameStylePreview: View {
+    let kind: FrameKind
+    let lineWidth: Double
+
+    var body: some View {
+        GeometryReader { geometry in
+            style(in: geometry.size)
+        }
+    }
+
+    @ViewBuilder
+    private func style(in size: CGSize) -> some View {
+        let strokeWidth = FrameRenderer.clampedLineWidth(lineWidth)
+        let strokeStyle = StrokeStyle(lineWidth: strokeWidth, lineCap: .round, lineJoin: .round)
+        let dashedStyle = StrokeStyle(lineWidth: strokeWidth, lineCap: .round, lineJoin: .round, dash: [8, 6])
+        let cornerRadius = min(CGFloat(18), min(size.width, size.height) * 0.15)
+
+        switch kind {
+        case .rounded:
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .strokeBorder(Color.black, style: strokeStyle)
+        case .square:
+            Rectangle()
+                .strokeBorder(Color.black, style: strokeStyle)
+        case .dashed:
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .strokeBorder(Color.black, style: dashedStyle)
+        case .double:
+            ZStack {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(Color.black, style: strokeStyle)
+
+                if canDrawInnerOutline(in: size, strokeWidth: strokeWidth) {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .strokeBorder(Color.black, style: strokeStyle)
+                        .padding(innerOutlineInset(for: strokeWidth))
+                }
+            }
+        case .oval:
+            Ellipse()
+                .strokeBorder(Color.black, style: strokeStyle)
+        }
+    }
+
+    private func innerOutlineInset(for strokeWidth: CGFloat) -> CGFloat {
+        max(CGFloat(6), strokeWidth * 2.5)
+    }
+
+    private func canDrawInnerOutline(in size: CGSize, strokeWidth: CGFloat) -> Bool {
+        let inset = innerOutlineInset(for: strokeWidth)
+        return size.width > inset * 2 + strokeWidth * 2
+            && size.height > inset * 2 + strokeWidth * 2
     }
 }
 

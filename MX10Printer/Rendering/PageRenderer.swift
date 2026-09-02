@@ -72,6 +72,8 @@ struct PageRenderer {
             render(imageElement: imageElement, in: context)
         case .sticker(let stickerElement):
             render(stickerElement: stickerElement, in: context)
+        case .frame(let frameElement):
+            render(frameElement: frameElement, in: context)
         }
     }
 
@@ -184,6 +186,26 @@ struct PageRenderer {
                 "rotation": stickerElement.rotationDegrees
             ]
         )
+    }
+
+    private func render(frameElement: FrameElement, in context: CGContext) {
+        let rect = frameElement.frame.cgRect
+        logger.log(
+            .render,
+            "render frame element",
+            metadata: [
+                "element": frameElement.id.uuidString,
+                "kind": frameElement.kind.rawValue,
+                "frame": rect.diagnosticDescription,
+                "lineWidth": frameElement.lineWidth,
+                "rotation": frameElement.rotationDegrees
+            ]
+        )
+
+        context.saveGState()
+        applyRotation(frameElement.rotationDegrees, around: rect, in: context)
+        FrameRenderer.draw(element: frameElement, in: context)
+        context.restoreGState()
     }
 
     private func preparedImage(from imageElement: ImageElement) -> UIImage? {

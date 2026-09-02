@@ -75,6 +75,15 @@ struct PrintDocument: Identifiable, Codable, Equatable {
         return element.id
     }
 
+    mutating func addFrameElement(kind: FrameKind) -> UUID {
+        let element = FrameElement(kind: kind)
+        var page = firstPage
+        page.elements.insert(.frame(element), at: 0)
+        firstPage = page
+        touch()
+        return element.id
+    }
+
     mutating func updateElement(id: UUID, update: (inout PrintElement) -> Void) {
         guard let index = firstPage.elements.firstIndex(where: { $0.id == id }) else {
             return
@@ -197,18 +206,21 @@ enum PrintElement: Identifiable, Codable, Equatable {
     case text(TextElement)
     case image(ImageElement)
     case sticker(StickerElement)
+    case frame(FrameElement)
 
     private enum CodingKeys: CodingKey {
         case type
         case text
         case image
         case sticker
+        case frame
     }
 
     private enum ElementType: String, Codable {
         case text
         case image
         case sticker
+        case frame
     }
 
     var id: UUID {
@@ -218,6 +230,8 @@ enum PrintElement: Identifiable, Codable, Equatable {
         case .image(let element):
             return element.id
         case .sticker(let element):
+            return element.id
+        case .frame(let element):
             return element.id
         }
     }
@@ -230,6 +244,8 @@ enum PrintElement: Identifiable, Codable, Equatable {
             case .image(let element):
                 return element.frame
             case .sticker(let element):
+                return element.frame
+            case .frame(let element):
                 return element.frame
             }
         }
@@ -244,6 +260,9 @@ enum PrintElement: Identifiable, Codable, Equatable {
             case .sticker(var element):
                 element.frame = newValue
                 self = .sticker(element)
+            case .frame(var element):
+                element.frame = newValue
+                self = .frame(element)
             }
         }
     }
@@ -255,6 +274,8 @@ enum PrintElement: Identifiable, Codable, Equatable {
         case .image(let element):
             return element.rotationDegrees
         case .sticker(let element):
+            return element.rotationDegrees
+        case .frame(let element):
             return element.rotationDegrees
         }
     }
@@ -273,6 +294,10 @@ enum PrintElement: Identifiable, Codable, Equatable {
             element.id = UUID()
             element.frame = element.frame.offsetBy(dx: 16, dy: 16)
             return .sticker(element)
+        case .frame(var element):
+            element.id = UUID()
+            element.frame = element.frame.offsetBy(dx: 16, dy: 16)
+            return .frame(element)
         }
     }
 
@@ -286,6 +311,8 @@ enum PrintElement: Identifiable, Codable, Equatable {
             self = .image(try container.decode(ImageElement.self, forKey: .image))
         case .sticker:
             self = .sticker(try container.decode(StickerElement.self, forKey: .sticker))
+        case .frame:
+            self = .frame(try container.decode(FrameElement.self, forKey: .frame))
         }
     }
 
@@ -301,6 +328,9 @@ enum PrintElement: Identifiable, Codable, Equatable {
         case .sticker(let element):
             try container.encode(ElementType.sticker, forKey: .type)
             try container.encode(element, forKey: .sticker)
+        case .frame(let element):
+            try container.encode(ElementType.frame, forKey: .type)
+            try container.encode(element, forKey: .frame)
         }
     }
 }
@@ -454,6 +484,68 @@ struct StickerElement: Identifiable, Codable, Equatable {
         self.id = id
         self.frame = frame
         self.kind = kind
+        self.rotationDegrees = rotationDegrees
+    }
+}
+
+enum FrameKind: String, CaseIterable, Codable, Identifiable {
+    case rounded
+    case square
+    case dashed
+    case double
+    case oval
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .rounded:
+            return "Round"
+        case .square:
+            return "Square"
+        case .dashed:
+            return "Dashed"
+        case .double:
+            return "Double"
+        case .oval:
+            return "Oval"
+        }
+    }
+
+    var systemImageName: String {
+        switch self {
+        case .rounded:
+            return "rectangle"
+        case .square:
+            return "square"
+        case .dashed:
+            return "rectangle.dashed"
+        case .double:
+            return "rectangle.on.rectangle"
+        case .oval:
+            return "oval"
+        }
+    }
+}
+
+struct FrameElement: Identifiable, Codable, Equatable {
+    var id: UUID
+    var frame: PrintElementFrame
+    var kind: FrameKind
+    var lineWidth: Double
+    var rotationDegrees: Double
+
+    init(
+        id: UUID = UUID(),
+        frame: PrintElementFrame = PrintElementFrame(x: 18, y: 20, width: 348, height: 150),
+        kind: FrameKind = .rounded,
+        lineWidth: Double = 3,
+        rotationDegrees: Double = 0
+    ) {
+        self.id = id
+        self.frame = frame
+        self.kind = kind
+        self.lineWidth = lineWidth
         self.rotationDegrees = rotationDegrees
     }
 }
