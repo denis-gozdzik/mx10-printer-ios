@@ -138,7 +138,7 @@ struct DrawingGeometry {
             return false
         }
 
-        return stroke(stroke, contains: point, tolerance: eraserTolerance(for: stroke))
+        return Self.stroke(stroke, contains: point, tolerance: eraserTolerance(for: stroke))
     }
 
     static func stroke(
