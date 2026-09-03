@@ -84,6 +84,14 @@ struct PrintDocument: Identifiable, Codable, Equatable {
         return element.id
     }
 
+    mutating func addDrawingElement(_ drawing: DrawingElement) -> UUID {
+        var page = firstPage
+        page.elements.append(.drawing(drawing))
+        firstPage = page
+        touch()
+        return drawing.id
+    }
+
     mutating func updateElement(id: UUID, update: (inout PrintElement) -> Void) {
         guard let index = firstPage.elements.firstIndex(where: { $0.id == id }) else {
             return
@@ -207,6 +215,7 @@ enum PrintElement: Identifiable, Codable, Equatable {
     case image(ImageElement)
     case sticker(StickerElement)
     case frame(FrameElement)
+    case drawing(DrawingElement)
 
     private enum CodingKeys: CodingKey {
         case type
@@ -214,6 +223,7 @@ enum PrintElement: Identifiable, Codable, Equatable {
         case image
         case sticker
         case frame
+        case drawing
     }
 
     private enum ElementType: String, Codable {
@@ -221,6 +231,7 @@ enum PrintElement: Identifiable, Codable, Equatable {
         case image
         case sticker
         case frame
+        case drawing
     }
 
     var id: UUID {
@@ -232,6 +243,8 @@ enum PrintElement: Identifiable, Codable, Equatable {
         case .sticker(let element):
             return element.id
         case .frame(let element):
+            return element.id
+        case .drawing(let element):
             return element.id
         }
     }
@@ -246,6 +259,8 @@ enum PrintElement: Identifiable, Codable, Equatable {
             case .sticker(let element):
                 return element.frame
             case .frame(let element):
+                return element.frame
+            case .drawing(let element):
                 return element.frame
             }
         }
@@ -263,6 +278,9 @@ enum PrintElement: Identifiable, Codable, Equatable {
             case .frame(var element):
                 element.frame = newValue
                 self = .frame(element)
+            case .drawing(var element):
+                element.frame = newValue
+                self = .drawing(element)
             }
         }
     }
@@ -276,6 +294,8 @@ enum PrintElement: Identifiable, Codable, Equatable {
         case .sticker(let element):
             return element.rotationDegrees
         case .frame(let element):
+            return element.rotationDegrees
+        case .drawing(let element):
             return element.rotationDegrees
         }
     }
@@ -298,6 +318,15 @@ enum PrintElement: Identifiable, Codable, Equatable {
             element.id = UUID()
             element.frame = element.frame.offsetBy(dx: 16, dy: 16)
             return .frame(element)
+        case .drawing(var element):
+            element.id = UUID()
+            element.frame = element.frame.offsetBy(dx: 16, dy: 16)
+            element.strokes = element.strokes.map { stroke in
+                var duplicate = stroke
+                duplicate.id = UUID()
+                return duplicate
+            }
+            return .drawing(element)
         }
     }
 
@@ -313,6 +342,8 @@ enum PrintElement: Identifiable, Codable, Equatable {
             self = .sticker(try container.decode(StickerElement.self, forKey: .sticker))
         case .frame:
             self = .frame(try container.decode(FrameElement.self, forKey: .frame))
+        case .drawing:
+            self = .drawing(try container.decode(DrawingElement.self, forKey: .drawing))
         }
     }
 
@@ -331,6 +362,9 @@ enum PrintElement: Identifiable, Codable, Equatable {
         case .frame(let element):
             try container.encode(ElementType.frame, forKey: .type)
             try container.encode(element, forKey: .frame)
+        case .drawing(let element):
+            try container.encode(ElementType.drawing, forKey: .type)
+            try container.encode(element, forKey: .drawing)
         }
     }
 }
@@ -546,6 +580,54 @@ struct FrameElement: Identifiable, Codable, Equatable {
         self.frame = frame
         self.kind = kind
         self.lineWidth = lineWidth
+        self.rotationDegrees = rotationDegrees
+    }
+}
+
+struct DrawingPoint: Codable, Equatable {
+    var x: Double
+    var y: Double
+}
+
+struct DrawingStroke: Identifiable, Codable, Equatable {
+    var id: UUID
+    var points: [DrawingPoint]
+    var lineWidth: Double
+
+    init(
+        id: UUID = UUID(),
+        points: [DrawingPoint],
+        lineWidth: Double
+    ) {
+        self.id = id
+        self.points = points
+        self.lineWidth = lineWidth
+    }
+}
+
+struct DrawingSize: Codable, Equatable {
+    var width: Double
+    var height: Double
+}
+
+struct DrawingElement: Identifiable, Codable, Equatable {
+    var id: UUID
+    var frame: PrintElementFrame
+    var sourceSize: DrawingSize
+    var strokes: [DrawingStroke]
+    var rotationDegrees: Double
+
+    init(
+        id: UUID = UUID(),
+        frame: PrintElementFrame,
+        sourceSize: DrawingSize,
+        strokes: [DrawingStroke],
+        rotationDegrees: Double = 0
+    ) {
+        self.id = id
+        self.frame = frame
+        self.sourceSize = sourceSize
+        self.strokes = strokes
         self.rotationDegrees = rotationDegrees
     }
 }

@@ -62,6 +62,46 @@ final class EditorCanvasLayoutTests: XCTestCase {
         XCTAssertEqual(translation.height, 18)
     }
 
+    func testDocumentPointConversionDividesByScale() {
+        let point = EditorCanvasLayout.documentPoint(
+            displayPoint: CGPoint(x: 150, y: 300),
+            scale: 0.75
+        )
+
+        XCTAssertEqual(point.x, 200)
+        XCTAssertEqual(point.y, 400)
+    }
+
+    func testDocumentPointAtScaleOneKeepsPointUnchanged() {
+        let point = EditorCanvasLayout.documentPoint(
+            displayPoint: CGPoint(x: 42, y: 18),
+            scale: 1
+        )
+
+        XCTAssertEqual(point.x, 42)
+        XCTAssertEqual(point.y, 18)
+    }
+
+    func testInvalidDocumentPointScaleFailsSafely() {
+        let point = EditorCanvasLayout.documentPoint(
+            displayPoint: CGPoint(x: 42, y: 18),
+            scale: 0
+        )
+
+        XCTAssertEqual(point, CGPoint.zero)
+    }
+
+    func testDocumentPointClampsToPageSize() {
+        let point = EditorCanvasLayout.documentPoint(
+            displayPoint: CGPoint(x: 600, y: 900),
+            scale: 0.75,
+            pageSize: CGSize(width: 384, height: 640)
+        )
+
+        XCTAssertEqual(point.x, 384)
+        XCTAssertEqual(point.y, 640)
+    }
+
     func testInvalidAvailableDimensionsFailSafely() {
         let layout = EditorCanvasLayout(
             pageSize: CGSize(width: 384, height: 640),
