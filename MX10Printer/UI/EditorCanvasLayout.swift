@@ -54,4 +54,39 @@ struct EditorCanvasLayout: Equatable {
             height: displayTranslation.height / scale
         )
     }
+
+    static func documentPoint(displayPoint: CGPoint, scale: CGFloat) -> CGPoint {
+        guard displayPoint.x.isFinite,
+              displayPoint.y.isFinite,
+              scale.isFinite,
+              scale > 0 else {
+            return .zero
+        }
+
+        return CGPoint(
+            x: displayPoint.x / scale,
+            y: displayPoint.y / scale
+        )
+    }
+
+    static func documentPoint(
+        displayPoint: CGPoint,
+        scale: CGFloat,
+        pageSize: CGSize
+    ) -> CGPoint {
+        let point = documentPoint(displayPoint: displayPoint, scale: scale)
+        guard point.x.isFinite,
+              point.y.isFinite,
+              pageSize.width.isFinite,
+              pageSize.height.isFinite,
+              pageSize.width > 0,
+              pageSize.height > 0 else {
+            return .zero
+        }
+
+        return CGPoint(
+            x: min(max(point.x, 0), pageSize.width),
+            y: min(max(point.y, 0), pageSize.height)
+        )
+    }
 }

@@ -20,6 +20,11 @@ struct PrintEditorView: View {
     @State private var statusMessage: String?
     @State private var isStickerPickerPresented = false
     @State private var isFramePickerPresented = false
+    @State private var isDrawingMode = false
+    @State private var drawingTool: DraftDrawingTool = .pen
+    @State private var drawingLineWidth: DrawingPenWidth = .medium
+    @State private var draftDrawingStrokes: [DrawingStroke] = []
+    @State private var activeDraftStroke: DrawingStroke?
 
     private let logger = DiagnosticLogger.shared
     private let jobBuilder = PrintJobBuilder()
@@ -58,6 +63,7 @@ struct PrintEditorView: View {
                         saveDocument()
                         dismiss()
                     }
+                    .disabled(isDrawingMode)
                 }
             }
         }
@@ -111,6 +117,7 @@ struct PrintEditorView: View {
             }
             .buttonStyle(.bordered)
             .lineLimit(1)
+            .disabled(isDrawingMode)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -133,7 +140,12 @@ struct PrintEditorView: View {
         ZStack(alignment: .bottom) {
             fittedCanvas
 
-            if let selectedElement {
+            if isDrawingMode {
+                drawingPalette
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 10)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else if let selectedElement {
                 inspectorPanel(for: selectedElement)
                     .padding(.horizontal, 12)
                     .padding(.bottom, statusBannerMessage == nil ? 10 : 58)
@@ -151,6 +163,10 @@ struct PrintEditorView: View {
     private var statusBannerMessage: String? {
         if printQueue.isPrinting {
             return "Printing..."
+        }
+
+        if isDrawingMode {
+            return nil
         }
 
         if let failure = printQueue.failedJobs.last {
@@ -225,26 +241,52 @@ struct PrintEditorView: View {
 
     private func pageCanvas(canvasScale: CGFloat) -> some View {
         ZStack(alignment: .topLeading) {
-            Color.white
+            ZStack(alignment: .topLeading) {
+                Color.white
 
-            if isPreviewMode {
-                if let previewImage = selectedPreviewImage {
-                    Image(decorative: previewImage, scale: 1)
-                        .interpolation(.none)
-                        .resizable()
-                        .frame(width: pageSize.width, height: pageSize.height)
+                if isPreviewMode {
+                    if let previewImage = selectedPreviewImage {
+                        Image(decorative: previewImage, scale: 1)
+                            .interpolation(.none)
+                            .resizable()
+                            .frame(width: pageSize.width, height: pageSize.height)
+                    } else {
+                        Text("Preview unavailable")
+                            .foregroundStyle(.secondary)
+                            .frame(width: pageSize.width, height: pageSize.height)
+                    }
                 } else {
-                    Text("Preview unavailable")
-                        .foregroundStyle(.secondary)
-                        .frame(width: pageSize.width, height: pageSize.height)
-                }
-            } else {
-                ForEach(document.firstPage.elements) { element in
-                    elementLayer(element, canvasScale: canvasScale)
+                    ForEach(document.firstPage.elements) { element in
+                        elementLayer(element, canvasScale: canvasScale)
+                            .allowsHitTesting(!isDrawingMode)
+                    }
                 }
             }
+            .frame(width: pageSize.width, height: pageSize.height)
+            .scaleEffect(canvasScale, anchor: .topLeading)
+            .frame(
+                width: pageSize.width * canvasScale,
+                height: pageSize.height * canvasScale,
+                alignment: .topLeading
+            )
+
+            if isDrawingMode {
+                DraftDrawingView(strokes: draftStrokesForDisplay, scale: canvasScale)
+                    .frame(width: pageSize.width * canvasScale, height: pageSize.height * canvasScale)
+                    .allowsHitTesting(false)
+
+                DrawingInputSurface(
+                    onChanged: { displayPoint in
+                        handleDrawingDragChanged(displayPoint: displayPoint, canvasScale: canvasScale)
+                    },
+                    onEnded: { displayPoint in
+                        handleDrawingDragEnded(displayPoint: displayPoint, canvasScale: canvasScale)
+                    }
+                )
+                .frame(width: pageSize.width * canvasScale, height: pageSize.height * canvasScale)
+            }
         }
-        .frame(width: pageSize.width, height: pageSize.height)
+        .frame(width: pageSize.width * canvasScale, height: pageSize.height * canvasScale)
         .background(Color.white)
         .overlay {
             Rectangle()
@@ -252,10 +294,11 @@ struct PrintEditorView: View {
         }
         .contentShape(Rectangle())
         .onTapGesture {
-            selectedElementID = nil
-            dismissEditorKeyboard()
+            if !isDrawingMode {
+                selectedElementID = nil
+                dismissEditorKeyboard()
+            }
         }
-        .scaleEffect(canvasScale, anchor: .topLeading)
     }
 
     private var bottomDock: some View {
@@ -266,11 +309,13 @@ struct PrintEditorView: View {
                 DockToolLabel(title: "Text", systemImageName: "textformat")
             }
             .buttonStyle(.plain)
+            .disabled(isDrawingMode)
 
             PhotosPicker(selection: $photoSelection, matching: .images) {
                 DockToolLabel(title: "Image", systemImageName: "photo")
             }
             .buttonStyle(.plain)
+            .disabled(isDrawingMode)
 
             Button {
                 isStickerPickerPresented = true
@@ -278,6 +323,7 @@ struct PrintEditorView: View {
                 DockToolLabel(title: "Sticker", systemImageName: "face.smiling")
             }
             .buttonStyle(.plain)
+            .disabled(isDrawingMode)
 
             Button {
                 isFramePickerPresented = true
@@ -285,6 +331,15 @@ struct PrintEditorView: View {
                 DockToolLabel(title: "Frame", systemImageName: "rectangle")
             }
             .buttonStyle(.plain)
+            .disabled(isDrawingMode)
+
+            Button {
+                enterDrawingMode()
+            } label: {
+                DockToolLabel(title: "Draw", systemImageName: "pencil.tip")
+            }
+            .buttonStyle(.plain)
+            .disabled(isDrawingMode)
 
             if printQueue.isPrinting {
                 Button(role: .destructive) {
@@ -310,6 +365,75 @@ struct PrintEditorView: View {
         .overlay(alignment: .top) {
             Divider()
         }
+    }
+
+    private var drawingPalette: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Picker("Pen width", selection: $drawingLineWidth) {
+                ForEach(DrawingPenWidth.allCases) { width in
+                    Text(width.title).tag(width)
+                }
+            }
+            .pickerStyle(.segmented)
+            .disabled(drawingTool == .eraser)
+
+            HStack(spacing: 8) {
+                DrawingPaletteButton(
+                    title: "Pen",
+                    systemImageName: "pencil.tip",
+                    isSelected: drawingTool == .pen
+                ) {
+                    drawingTool = .pen
+                }
+
+                DrawingPaletteButton(
+                    title: "Eraser",
+                    systemImageName: "eraser",
+                    isSelected: drawingTool == .eraser
+                ) {
+                    activeDraftStroke = nil
+                    drawingTool = .eraser
+                }
+
+                DrawingPaletteButton(
+                    title: "Undo",
+                    systemImageName: "arrow.uturn.backward",
+                    isEnabled: !draftDrawingStrokes.isEmpty
+                ) {
+                    undoDrawingStroke()
+                }
+
+                DrawingPaletteButton(
+                    title: "Clear",
+                    systemImageName: "trash",
+                    isEnabled: !draftDrawingStrokes.isEmpty || activeDraftStroke != nil,
+                    isDestructive: true
+                ) {
+                    clearDraftDrawing()
+                }
+
+                DrawingPaletteButton(
+                    title: "Cancel",
+                    systemImageName: "xmark",
+                    isSubtle: true
+                ) {
+                    cancelDrawing()
+                }
+
+                DrawingPaletteButton(
+                    title: "Done",
+                    systemImageName: "checkmark",
+                    isProminent: true
+                ) {
+                    commitDrawing()
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .top)
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .shadow(color: Color.black.opacity(0.12), radius: 14, y: 4)
     }
 
     private func inspectorPanel(for selectedElement: PrintElement) -> some View {
@@ -372,6 +496,8 @@ struct PrintEditorView: View {
             stickerInspector
         case .frame:
             frameInspector
+        case .drawing:
+            drawingInspector
         }
     }
 
@@ -385,6 +511,8 @@ struct PrintEditorView: View {
             return "Sticker"
         case .frame:
             return "Frame"
+        case .drawing:
+            return "Drawing"
         }
     }
 
@@ -398,6 +526,8 @@ struct PrintEditorView: View {
             return "face.smiling"
         case .frame:
             return "rectangle"
+        case .drawing:
+            return "pencil.line"
         }
     }
 
@@ -521,6 +651,25 @@ struct PrintEditorView: View {
         }
     }
 
+    private var drawingInspector: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Drawing")
+                .font(.subheadline.weight(.semibold))
+
+            Text("\(selectedDrawingElement?.strokes.count ?? 0) strokes")
+                .foregroundStyle(.secondary)
+
+            Button {
+                updateSelectedDrawing { drawingElement in
+                    drawingElement.rotationDegrees = (drawingElement.rotationDegrees + 90).truncatingRemainder(dividingBy: 360)
+                }
+            } label: {
+                Label("Rotate 90", systemImage: "rotate.right")
+            }
+            .buttonStyle(.bordered)
+        }
+    }
+
     private var inspectorButtonColumns: [GridItem] {
         [
             GridItem(.flexible(), spacing: 8),
@@ -620,6 +769,8 @@ struct PrintEditorView: View {
 
         case .frame(let frameElement):
             FrameElementView(element: frameElement)
+        case .drawing(let drawingElement):
+            DrawingElementView(element: drawingElement)
         }
     }
 
@@ -790,6 +941,14 @@ struct PrintEditorView: View {
         return element
     }
 
+    private var selectedDrawingElement: DrawingElement? {
+        guard case .drawing(let element) = selectedElement else {
+            return nil
+        }
+
+        return element
+    }
+
     private var selectedImageContentModeBinding: Binding<PrintImageContentMode> {
         Binding(
             get: { selectedImageElement?.contentMode ?? .fit },
@@ -915,6 +1074,177 @@ struct PrintEditorView: View {
         )
     }
 
+    private func enterDrawingMode() {
+        dismissEditorKeyboard()
+        selectedElementID = nil
+        isPreviewMode = false
+        drawingTool = .pen
+        drawingLineWidth = .medium
+        draftDrawingStrokes = []
+        activeDraftStroke = nil
+        statusMessage = nil
+        isDrawingMode = true
+        logger.log(.editor, "draw mode entered")
+    }
+
+    private var draftStrokesForDisplay: [DrawingStroke] {
+        if let activeDraftStroke {
+            return draftDrawingStrokes + [activeDraftStroke]
+        }
+
+        return draftDrawingStrokes
+    }
+
+    private func handleDrawingDragChanged(displayPoint: CGPoint, canvasScale: CGFloat) {
+        guard let documentPoint = drawingPoint(displayPoint: displayPoint, canvasScale: canvasScale) else {
+            return
+        }
+
+        switch drawingTool {
+        case .pen:
+            if let activeDraftStroke {
+                self.activeDraftStroke = DrawingGeometry.sampledStroke(from: activeDraftStroke, adding: documentPoint)
+            } else {
+                activeDraftStroke = DrawingStroke(points: [documentPoint], lineWidth: drawingLineWidth.lineWidth)
+            }
+        case .eraser:
+            eraseDraftStroke(at: documentPoint)
+        }
+    }
+
+    private func handleDrawingDragEnded(displayPoint: CGPoint, canvasScale: CGFloat) {
+        guard drawingTool == .pen else {
+            return
+        }
+
+        if let documentPoint = drawingPoint(displayPoint: displayPoint, canvasScale: canvasScale),
+           let activeDraftStroke {
+            self.activeDraftStroke = DrawingGeometry.sampledStroke(from: activeDraftStroke, adding: documentPoint)
+        }
+
+        completeActiveDraftStroke()
+    }
+
+    private func drawingPoint(displayPoint: CGPoint, canvasScale: CGFloat) -> DrawingPoint? {
+        let displaySize = EditorCanvasLayout.displaySize(pageSize: pageSize, scale: canvasScale)
+        guard displayPoint.x.isFinite,
+              displayPoint.y.isFinite,
+              displayPoint.x >= 0,
+              displayPoint.y >= 0,
+              displayPoint.x <= displaySize.width,
+              displayPoint.y <= displaySize.height else {
+            return nil
+        }
+
+        let documentPoint = EditorCanvasLayout.documentPoint(
+            displayPoint: displayPoint,
+            scale: canvasScale,
+            pageSize: pageSize
+        )
+        return DrawingPoint(x: Double(documentPoint.x), y: Double(documentPoint.y))
+    }
+
+    private func completeActiveDraftStroke() {
+        guard let activeDraftStroke,
+              !activeDraftStroke.points.isEmpty else {
+            self.activeDraftStroke = nil
+            return
+        }
+
+        draftDrawingStrokes.append(activeDraftStroke)
+        self.activeDraftStroke = nil
+        logger.log(
+            .editor,
+            "drawing stroke completed",
+            metadata: [
+                "points": activeDraftStroke.points.count,
+                "lineWidth": activeDraftStroke.lineWidth
+            ]
+        )
+    }
+
+    private func eraseDraftStroke(at point: DrawingPoint) {
+        let before = draftDrawingStrokes.count
+        draftDrawingStrokes.removeAll { stroke in
+            DrawingGeometry.stroke(stroke, contains: point)
+        }
+        let removed = before - draftDrawingStrokes.count
+
+        if removed > 0 {
+            logger.log(.editor, "drawing stroke erased", metadata: ["removed": removed])
+        }
+    }
+
+    private func undoDrawingStroke() {
+        guard !draftDrawingStrokes.isEmpty else {
+            return
+        }
+
+        let removed = draftDrawingStrokes.removeLast()
+        logger.log(
+            .editor,
+            "drawing stroke undone",
+            metadata: [
+                "stroke": removed.id.uuidString,
+                "remaining": draftDrawingStrokes.count
+            ]
+        )
+    }
+
+    private func clearDraftDrawing() {
+        let removed = draftDrawingStrokes.count + (activeDraftStroke == nil ? 0 : 1)
+        guard removed > 0 else {
+            return
+        }
+
+        draftDrawingStrokes = []
+        activeDraftStroke = nil
+        logger.log(.editor, "drawing cleared", metadata: ["removed": removed])
+    }
+
+    private func cancelDrawing() {
+        let discardedStrokes = draftDrawingStrokes.count + (activeDraftStroke == nil ? 0 : 1)
+        draftDrawingStrokes = []
+        activeDraftStroke = nil
+        isDrawingMode = false
+        drawingTool = .pen
+        logger.log(.editor, "drawing cancelled", metadata: ["strokes": discardedStrokes])
+    }
+
+    private func commitDrawing() {
+        completeActiveDraftStroke()
+
+        guard let drawing = DrawingGeometry.drawingElement(
+            from: draftDrawingStrokes,
+            pageWidth: PrintDocument.pageWidth,
+            pageHeight: document.firstPage.height
+        ) else {
+            draftDrawingStrokes = []
+            isDrawingMode = false
+            drawingTool = .pen
+            return
+        }
+
+        let elementID = document.addDrawingElement(drawing)
+        selectedElementID = elementID
+        draftDrawingStrokes = []
+        activeDraftStroke = nil
+        isDrawingMode = false
+        drawingTool = .pen
+        saveDocument()
+        refreshPreview()
+        logger.log(
+            .editor,
+            "drawing element added",
+            metadata: [
+                "element": elementID.uuidString,
+                "strokes": drawing.strokes.count,
+                "points": DrawingGeometry.totalPointCount(in: drawing.strokes),
+                "frame": "x:\(Int(drawing.frame.x)),y:\(Int(drawing.frame.y)),w:\(Int(drawing.frame.width)),h:\(Int(drawing.frame.height))"
+            ]
+        )
+    }
+
     private func updateSelectedText(_ update: (inout TextElement) -> Void) {
         guard let selectedElementID else {
             return
@@ -973,6 +1303,21 @@ struct PrintEditorView: View {
 
             update(&frameElement)
             element = .frame(frameElement)
+        }
+    }
+
+    private func updateSelectedDrawing(_ update: (inout DrawingElement) -> Void) {
+        guard let selectedElementID else {
+            return
+        }
+
+        updateElement(id: selectedElementID) { element in
+            guard case .drawing(var drawingElement) = element else {
+                return
+            }
+
+            update(&drawingElement)
+            element = .drawing(drawingElement)
         }
     }
 
@@ -1083,6 +1428,10 @@ struct PrintEditorView: View {
     }
 
     private var printUnavailableReason: String? {
+        if isDrawingMode {
+            return "Finish drawing first"
+        }
+
         if printQueue.hasActiveOrPendingJob {
             return "Another print job is active"
         }
@@ -1139,6 +1488,166 @@ private extension PrintImageContentMode {
         case .fill:
             return .fill
         }
+    }
+}
+
+private enum DraftDrawingTool {
+    case pen
+    case eraser
+}
+
+private struct DrawingInputSurface: View {
+    let onChanged: (CGPoint) -> Void
+    let onEnded: (CGPoint) -> Void
+
+    var body: some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        onChanged(value.location)
+                    }
+                    .onEnded { value in
+                        onEnded(value.location)
+                    }
+            )
+            .accessibilityLabel("Drawing surface")
+    }
+}
+
+private struct DraftDrawingView: View {
+    let strokes: [DrawingStroke]
+    let scale: CGFloat
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(strokes) { stroke in
+                DrawingStrokeView(stroke: stroke, scaleX: scale, scaleY: scale)
+            }
+        }
+    }
+}
+
+private struct DrawingElementView: View {
+    let element: DrawingElement
+
+    var body: some View {
+        GeometryReader { geometry in
+            if element.sourceSize.width > 0,
+               element.sourceSize.height > 0,
+               geometry.size.width > 0,
+               geometry.size.height > 0 {
+                let scaleX = geometry.size.width / CGFloat(element.sourceSize.width)
+                let scaleY = geometry.size.height / CGFloat(element.sourceSize.height)
+
+                ZStack(alignment: .topLeading) {
+                    ForEach(element.strokes) { stroke in
+                        DrawingStrokeView(stroke: stroke, scaleX: scaleX, scaleY: scaleY)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct DrawingStrokeView: View {
+    let stroke: DrawingStroke
+    let scaleX: CGFloat
+    let scaleY: CGFloat
+
+    var body: some View {
+        let points = stroke.points.filter(\.isFinite)
+        let lineWidth = DrawingRenderer.clampedLineWidth(stroke.lineWidth * Double(min(scaleX, scaleY)))
+
+        if let firstPoint = points.first {
+            if points.count == 1 {
+                Circle()
+                    .fill(Color.black)
+                    .frame(width: lineWidth, height: lineWidth)
+                    .position(x: CGFloat(firstPoint.x) * scaleX, y: CGFloat(firstPoint.y) * scaleY)
+            } else {
+                Path { path in
+                    path.move(to: CGPoint(x: CGFloat(firstPoint.x) * scaleX, y: CGFloat(firstPoint.y) * scaleY))
+                    for point in points.dropFirst() {
+                        path.addLine(to: CGPoint(x: CGFloat(point.x) * scaleX, y: CGFloat(point.y) * scaleY))
+                    }
+                }
+                .stroke(
+                    Color.black,
+                    style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
+                )
+            }
+        }
+    }
+}
+
+private struct DrawingPaletteButton: View {
+    let title: String
+    let systemImageName: String
+    var isSelected = false
+    var isEnabled = true
+    var isProminent = false
+    var isDestructive = false
+    var isSubtle = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 3) {
+                Image(systemName: systemImageName)
+                    .font(.system(size: 17, weight: .semibold))
+
+                Text(title)
+                    .font(.caption2.weight(isProminent ? .semibold : .regular))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.65)
+            }
+            .frame(maxWidth: .infinity, minHeight: 48)
+            .foregroundStyle(foregroundColor)
+            .background(background)
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(borderColor, lineWidth: isSelected ? 2 : 1)
+            }
+            .opacity(isEnabled ? 1 : 0.4)
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .accessibilityLabel(title)
+    }
+
+    private var foregroundColor: Color {
+        if isProminent {
+            return .white
+        }
+
+        if isDestructive {
+            return .red
+        }
+
+        return .primary
+    }
+
+    private var background: Color {
+        if isProminent {
+            return .accentColor
+        }
+
+        if isSelected {
+            return Color.accentColor.opacity(0.16)
+        }
+
+        return isSubtle ? Color.clear : Color(.secondarySystemBackground)
+    }
+
+    private var borderColor: Color {
+        if isSelected {
+            return .accentColor
+        }
+
+        return Color.secondary.opacity(isSubtle ? 0.18 : 0.3)
     }
 }
 

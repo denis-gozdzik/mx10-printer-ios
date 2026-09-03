@@ -74,6 +74,8 @@ struct PageRenderer {
             render(stickerElement: stickerElement, in: context)
         case .frame(let frameElement):
             render(frameElement: frameElement, in: context)
+        case .drawing(let drawingElement):
+            render(drawingElement: drawingElement, in: context)
         }
     }
 
@@ -205,6 +207,26 @@ struct PageRenderer {
         context.saveGState()
         applyRotation(frameElement.rotationDegrees, around: rect, in: context)
         FrameRenderer.draw(element: frameElement, in: context)
+        context.restoreGState()
+    }
+
+    private func render(drawingElement: DrawingElement, in context: CGContext) {
+        let rect = drawingElement.frame.cgRect
+        logger.log(
+            .render,
+            "render drawing element",
+            metadata: [
+                "element": drawingElement.id.uuidString,
+                "frame": rect.diagnosticDescription,
+                "strokes": drawingElement.strokes.count,
+                "points": DrawingGeometry.totalPointCount(in: drawingElement.strokes),
+                "rotation": drawingElement.rotationDegrees
+            ]
+        )
+
+        context.saveGState()
+        applyRotation(drawingElement.rotationDegrees, around: rect, in: context)
+        DrawingRenderer.draw(element: drawingElement, in: context)
         context.restoreGState()
     }
 
