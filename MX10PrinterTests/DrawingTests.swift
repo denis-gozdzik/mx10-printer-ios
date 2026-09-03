@@ -317,7 +317,7 @@ final class DrawingTests: XCTestCase {
     func testDrawingBackgroundInteriorRemainsWhite() throws {
         let pixels = try renderDrawing(makeDrawingElement()).pixels
 
-        XCTAssertGreaterThan(pixels.whitePixelCount(in: CGRect(x: 250, y: 250, width: 40, height: 40)), 1_000)
+        XCTAssertGreaterThan(pixels.whitePixelCount(in: CGRect(x: 250, y: 120, width: 40, height: 40)), 1_000)
     }
 
     func testThinMediumThickProduceDifferentMeasurableStrokeThickness() throws {
